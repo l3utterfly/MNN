@@ -6,10 +6,10 @@ import android.os.Bundle
 import java.lang.ref.WeakReference
 
 /**
- * 全局工具类，用于跟踪当前活跃的 Activity
- */
+ * Global utility class for tracking current active Activity*/
 object CurrentActivityTracker : Application.ActivityLifecycleCallbacks {
     private var currentActivityRef: WeakReference<Activity>? = null
+    private var startedActivityCount: Int = 0
     
     val currentActivity: Activity?
         get() = currentActivityRef?.get()
@@ -20,22 +20,33 @@ object CurrentActivityTracker : Application.ActivityLifecycleCallbacks {
     
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
     
-    override fun onActivityStarted(activity: Activity) {}
+    override fun onActivityStarted(activity: Activity) {
+        startedActivityCount += 1
+        if (startedActivityCount == 1) {
+            CrashReportContext.setAppInForeground(true)
+        }
+    }
     
     override fun onActivityResumed(activity: Activity) {
         currentActivityRef = WeakReference(activity)
+        CrashReportContext.setCurrentActivity(activity.javaClass.simpleName)
     }
     
     override fun onActivityPaused(activity: Activity) {}
     
-    override fun onActivityStopped(activity: Activity) {}
+    override fun onActivityStopped(activity: Activity) {
+        startedActivityCount = (startedActivityCount - 1).coerceAtLeast(0)
+        if (startedActivityCount == 0) {
+            CrashReportContext.setAppInForeground(false)
+        }
+    }
     
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
     
     override fun onActivityDestroyed(activity: Activity) {
-        // 清理已销毁的Activity引用
+        //Clean up destroyed Activity references
         if (currentActivityRef?.get() == activity) {
             currentActivityRef = null
         }
     }
-} 
+}

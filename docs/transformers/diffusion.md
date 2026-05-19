@@ -20,7 +20,8 @@ https://huggingface.co/IDEA-CCNL/Taiyi-Stable-Diffusion-1B-Chinese-v0.1/tree/mai
 cd mnn_path/transformers/diffusion/export
 python onnx_export.py \
     --model_path hf_sd_load_path \
-    --output_path onnx_save_path
+    --output_path onnx_save_path \
+    --opset 18
 ```
 注意，上述脚本需要依赖torch/onnx/diffusers等库，可以安装conda环境：
 ```
@@ -65,8 +66,9 @@ cd mnn_path/project/android/build
 其中，resource_path 就是mnn模型文件的路径，除了mnn文件，还需要:
 ### 资源拷贝
 ```
-(a) 针对stable-diffusion-v1-5/chilloutmix模型需要将huggingfacetokenizer目录下merges.txt和vocab.json拷贝到resource_path文件夹中。
-(b) 针对Taiyi-Stable-Diffusion模型需要将huggingfacetokenizer目录下vocab.txt拷贝到resource_path文件夹中。
+(a) diffusion tokenizer 已统一为 mtok-only，编译时需要开启 `-DMNN_BUILD_LLM=ON`。
+(b) `convert_mnn.py` 会把 HuggingFace tokenizer 导出为 `tokenizer.mtok`。
+(c) 运行时需要将 `tokenizer.mtok` 放到 resource_path 文件夹中。
 ```
 ### 参数设置
 ```

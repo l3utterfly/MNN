@@ -18,22 +18,21 @@ import com.alibaba.mnnllm.android.widgets.BottomTabBar
  * @param containerId The ID of the container where fragments will be placed.
  * @param bottomNav The BottomTabBar view to control fragment switching.
  * @param listener A listener to communicate UI update events back to the activity.
+ * @param modelListChangeListener Optional listener for model list changes (e.g. model deleted); activity uses it to notify ModelMarketFragment.
  */
 class MainFragmentManager(
     private val activity: AppCompatActivity,
     private val containerId: Int,
     private val bottomNav: BottomTabBar,
-    private val listener: FragmentLifecycleListener
+    private val listener: FragmentLifecycleListener,
+    private val modelListChangeListener: com.alibaba.mnnllm.android.modelist.OnModelListChangeListener? = null
 ) {
     private var modelListFragment: ModelListFragment? = null
     private var modelMarketFragment: ModelMarketFragment? = null
     private var benchmarkFragment: BenchmarkFragment? = null
     var activeFragment: Fragment? = null
 
-    /**
-     * An interface for the manager to communicate important events back to the hosting Activity.
-     * 这让 Activity 可以响应 Fragment 的变化来更新自己的 UI (e.g., Toolbar title)。
-     */
+    /** * An interface for the manager to communicate important events back to the hosting Activity. * This lets Activity can respond to Fragment changes to updateits own UI (e.g., Toolbar title).*/
     interface FragmentLifecycleListener {
         fun onTabChanged(newTab: BottomTabBar.Tab)
     }
@@ -51,7 +50,7 @@ class MainFragmentManager(
             activity.supportFragmentManager.beginTransaction()
                 .add(containerId, benchmarkFragment!!, TAG_BENCHMARK).hide(benchmarkFragment!!)
                 .add(containerId, modelMarketFragment!!, TAG_MARKET).hide(modelMarketFragment!!)
-                .add(containerId, modelListFragment!!, TAG_LIST) // 默认显示
+                .add(containerId, modelListFragment!!, TAG_LIST) //Default display
                 .commit()
 
             activeFragment = modelListFragment
@@ -70,6 +69,7 @@ class MainFragmentManager(
         }
 
         setupTabListener()
+        modelListFragment?.onModelListChangeListener = modelListChangeListener
         val initialTab = getTabForFragment(activeFragment)
         bottomNav.select(initialTab)
         listener.onTabChanged(initialTab)
@@ -103,7 +103,7 @@ class MainFragmentManager(
 
             if (targetFragment != null && activeFragment != targetFragment) {
                 switchFragment(targetFragment)
-                listener.onTabChanged(tab) // 通知 Activity
+                listener.onTabChanged(tab) //Notify Activity
             }
         }
     }
@@ -125,6 +125,13 @@ class MainFragmentManager(
             is BenchmarkFragment -> BottomTabBar.Tab.BENCHMARK
             else -> BottomTabBar.Tab.LOCAL_MODELS
         }
+    }
+
+    /**
+     * Notify ModelMarketFragment that the set of downloaded models has changed (e.g. after delete in ModelListFragment).
+     */
+    fun notifyModelMarketDownloadedModelsChanged() {
+        modelMarketFragment?.onDownloadedModelsChanged()
     }
 
     companion object {

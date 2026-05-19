@@ -475,6 +475,7 @@ Calibration::Calibration(MNN::NetT* model, const uint8_t* modelBuffer, const int
     }
     if (picObj.HasMember("batch_size")) {
         _batch = picObj["batch_size"].GetInt();
+        _batchSetByUser = true;
     }
     if (picObj.HasMember("quant_bits")) {
         _quant_bits = picObj["quant_bits"].GetInt();
@@ -569,7 +570,7 @@ Calibration::Calibration(MNN::NetT* model, const uint8_t* modelBuffer, const int
     config.backupType = MNN_FORWARD_CPU;
     BackendConfig backendConfig;
     config.backendConfig     = &backendConfig;
-    
+
     std::shared_ptr<Executor::RuntimeManager> rtmgr(Executor::RuntimeManager::createRuntimeManager(config));
     if (_featureQuantizeMethod == "KL" || _featureQuantizeMethod == "ADMM") {
         _featureInfo.clear();
@@ -652,7 +653,7 @@ Calibration::Calibration(MNN::NetT* model, const uint8_t* modelBuffer, const int
         }
     }
 
-    
+
     if (_debug) {
         _moduleOrigin.reset(Module::load(mInputNames, mOutputNames, originalModelFile.c_str(), rtmgr)); // rtmgr.mode->debug
     }
@@ -733,7 +734,60 @@ Calibration::Calibration(MNN::NetT* model, const uint8_t* modelBuffer, const int
          for (auto& output_: outputs) {
              output_->readMap<float>();
          }
-        _featureInfoOrigin = _featureInfo;
+        if (_debug) {
+            MNN::TensorCallBackWithInfo beforeOrigin = [&](const std::vector<MNN::Tensor*>& nTensors, const MNN::OperatorInfo* info) {
+                std::string opName = info->name();
+                std::vector<std::string>::iterator iter = std::find(_skip_quant_ops.begin(), _skip_quant_ops.end(), opName);
+                if (iter != _skip_quant_ops.end()) {
+                    return true;
+                }
+                if (Helper::gNotNeedFeatureOp.find(info->type()) == Helper::gNotNeedFeatureOp.end()) {
+                    int i = 0;
+                    for (auto t : nTensors) {
+                        if (TensorUtils::getDescribe(t)->index < 0) {
+                            continue;
+                        }
+                        auto weakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(t)->mContent);
+                        if (_featureInfoOrigin.find(weakPtr) == _featureInfoOrigin.end() && MNN::TensorUtils::getDescribe(t)->memoryType != MNN::Tensor::InsideDescribe::MEMORY_VIRTUAL) {
+                            _featureInfoOrigin[weakPtr] = std::shared_ptr<TensorStatistic>(
+                                new TensorStatistic(t, _featureQuantizeMethod, opName + " input_tensor_" + flatbuffers::NumToString(i), _featureClampValue));
+                        }
+                        i++;
+                    }
+                }
+                return true;
+            };
+            MNN::TensorCallBackWithInfo afterOrigin = [this](const std::vector<MNN::Tensor*>& nTensors,
+                                                    const MNN::OperatorInfo* info) {
+                std::string opName = info->name();
+                std::vector<std::string>::iterator iter = std::find(_skip_quant_ops.begin(), _skip_quant_ops.end(), opName);
+                if (iter != _skip_quant_ops.end()) {
+                    return true;
+                }
+                if (Helper::gNotNeedFeatureOp.find(info->type()) == Helper::gNotNeedFeatureOp.end()) {
+                    int i = 0;
+                    for (auto t : nTensors) {
+                        if (TensorUtils::getDescribe(t)->index < 0) {
+                            continue;
+                        }
+                        auto weakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(t)->mContent);
+                        if (_featureInfoOrigin.find(weakPtr) == _featureInfoOrigin.end()) {
+                            _featureInfoOrigin[weakPtr] =
+                                std::shared_ptr<TensorStatistic>(new TensorStatistic(t, _featureQuantizeMethod, opName + " output_tensor_" + flatbuffers::NumToString(i), _featureClampValue));
+                        }
+                        i++;
+                    }
+                }
+                return true;
+            };
+            Express::Executor::getGlobalExecutor()->setCallBack(std::move(beforeOrigin), std::move(afterOrigin));
+            auto outputsOrigin = _moduleOrigin->onForward(mInputs);
+            for (auto& output_: outputsOrigin) {
+                output_->readMap<float>();
+            }
+        } else {
+            _featureInfoOrigin = _featureInfo;
+        }
 
         if (_featureQuantizeMethod == "KL") {
             // set the tensor-statistic method of input tensor as THRESHOLD_MAX
@@ -834,6 +888,7 @@ void Calibration::_collectFeatureMapsDistribution() {
             Helper::preprocessInput(_process.get(), _preprocessConfig, file, inputTensor, _inputType, mInputs[0]);
         }
         MNN::TensorCallBackWithInfo before = [&](const std::vector<MNN::Tensor*>& nTensors, const MNN::OperatorInfo* info) {
+            std::vector<std::weak_ptr<MNN::Tensor::InsideDescribe::NativeInsideDescribe>> inputsWeakPtrs;
             for (auto t : nTensors) {
                 if (TensorUtils::getDescribe(t)->index < 0) {
                     continue;
@@ -844,6 +899,16 @@ void Calibration::_collectFeatureMapsDistribution() {
                         _featureInfo[weakPtr]->updateDistribution();
                     }
                 }
+                if (info->type() == "Raster" || info->type() == "Pooling") {
+                    inputsWeakPtrs.emplace_back(weakPtr);
+                }
+            }
+
+            // store all raster input tensor
+            if (info->type() == "Raster") {
+                _rasterTensors[info->name()] = std::make_pair(inputsWeakPtrs[0], inputsWeakPtrs);
+            } else if (info->type() == "Pooling") {
+                _poolTensors[info->name()] = std::make_pair(inputsWeakPtrs[0], inputsWeakPtrs);
             }
             return true;
         };
@@ -858,6 +923,17 @@ void Calibration::_collectFeatureMapsDistribution() {
                         _featureInfo[weakPtr]->updateDistribution();
                     }
                 }
+            }
+
+            // store raster output tensor
+            if (info->type() == "Raster") {
+                auto inputsWeakPtrs = _rasterTensors[info->name()].second;
+                auto outputweakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(nTensors[0])->mContent);
+                _rasterTensors[info->name()] = std::make_pair(outputweakPtr, inputsWeakPtrs);
+            } else if (info->type() == "Pooling") {
+                auto inputsWeakPtrs = _poolTensors[info->name()].second;
+                auto outputweakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(nTensors[0])->mContent);
+                _poolTensors[info->name()] = std::make_pair(outputweakPtr, inputsWeakPtrs);
             }
             return true;
         };
@@ -880,6 +956,31 @@ void Calibration::_computeFeatureScaleKL() {
         AUTOTIME;
         _scales[iter.first] = iter.second->finishAndCompute();
     }
+
+    for (auto& iter: _rasterTensors) {
+        auto inputsPtr = iter.second.second;
+        auto outputPtr = iter.second.first;
+        if (inputsPtr.size() > 1) {
+            for (auto& inputWeakPtr: inputsPtr) {
+                _scales[inputWeakPtr].first = _scales[outputPtr].first;
+                _scales[inputWeakPtr].second = _scales[outputPtr].second;
+            }
+        } else {
+            auto inputWeakPtr = inputsPtr[0];
+            _scales[outputPtr].first = _scales[inputWeakPtr].first;
+            _scales[outputPtr].second = _scales[inputWeakPtr].second;
+        }
+    }
+    for (auto& iter: _poolTensors) {
+        auto inputsPtr = iter.second.second;
+        auto outputPtr = iter.second.first;
+
+        for (auto& inputWeakPtr: inputsPtr) {
+            _scales[outputPtr].first  = _scales[inputWeakPtr].first;
+            _scales[outputPtr].second = _scales[inputWeakPtr].second;
+        }
+
+    }
 }
 
 void Calibration::_computeFeatureScaleADMM() {
@@ -896,7 +997,7 @@ void Calibration::_computeFeatureScaleADMM() {
             inputTensors[i] = inputs[i]->getTensor();
         }
     }
-    
+
     auto dimType                        = MNN::Tensor::CAFFE_C4;
     if (netInfo->inputs[0].order == NHWC) {
         dimType = MNN::Tensor::TENSORFLOW;
@@ -1016,7 +1117,7 @@ void Calibration::_insertScale() {
         if (des->index < 0) {
             continue;
         }
-        
+
         describe->index = des->index;
         describe->quantInfo.reset(new MNN::TensorQuantInfoT);
         describe->quantInfo->scale = iter.second.first;
@@ -1096,7 +1197,9 @@ void Calibration::_insertScale() {
         } else if (_weightQuantizeMethod == "ADMM") {
             QuantizeWeightADMM(originWeight, weightSize, quantizedWeight.data(), quantizedWeightScale.data(), outputChannel, _weightClampValue);
         }
-        param->quanParameter = IDSTEncoder::encode(originWeight, quantizedWeightScale, weightSize/channles, channles, false, quantizedWeight.data(), -_weightClampValue, _quant_bits, _quant_bits > 7);
+        param->quanParameter =
+            IDSTEncoder::encode(originWeight, quantizedWeightScale, weightSize / channles, channles, false,
+                                quantizedWeight.data(), -_weightClampValue, {_quant_bits, _quant_bits > 7});
         param->quanParameter->scaleIn = inputScale;
         param->quanParameter->scaleOut = outputScale;
         param->weight.clear();
@@ -1107,69 +1210,7 @@ void Calibration::_computeQuantError() {
     std::map<std::string, std::vector<float>> overflowRatiosMap;
     std::map<std::string, std::vector<float>> tensorCosDistanceMap;
     std::map<std::string, std::vector<float>> fakeQuantedFeatures;
-    MNN::TensorCallBackWithInfo before = [&](const std::vector<MNN::Tensor*>& nTensors,
-                                                 const MNN::OperatorInfo* info) {
-            if (info->type() == "Raster") {
-                return true;
-            }
-            for (auto t : nTensors) {
-                auto weakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(t)->mContent);
-                if (_featureInfo.find(weakPtr) != _featureInfo.end()) {
-                    if (_featureInfo[weakPtr]->visited() == false) {
-                        auto dequantFeatureAndOverflowRatio = _featureInfo[weakPtr]->fakeQuantFeature();
-                        fakeQuantedFeatures[_featureInfo[weakPtr]->name()] = dequantFeatureAndOverflowRatio.first;
-                        overflowRatiosMap[_featureInfo[weakPtr]->name()].emplace_back(dequantFeatureAndOverflowRatio.second);
-                    }
-                }
-            }
-            return true;
-    };
-    MNN::TensorCallBackWithInfo after = [&](const std::vector<MNN::Tensor*>& nTensors,
-                                                const MNN::OperatorInfo* info) {
-        for (auto t : nTensors) {
-            auto weakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(t)->mContent);
-            if (_featureInfo.find(weakPtr) != _featureInfo.end()) {
-                if (_featureInfo[weakPtr]->visited() == false) {
-                    auto dequantFeatureAndOverflowRatio = _featureInfo[weakPtr]->fakeQuantFeature();
-                    fakeQuantedFeatures[_featureInfo[weakPtr]->name()] = dequantFeatureAndOverflowRatio.first;
-                    overflowRatiosMap[_featureInfo[weakPtr]->name()].emplace_back(dequantFeatureAndOverflowRatio.second);
-                }
-            }
-        }
-        return true;
-    };
 
-    MNN::TensorCallBackWithInfo beforeOrigin = [&](const std::vector<MNN::Tensor*>& nTensors,
-                                                 const MNN::OperatorInfo* info) {
-        if (info->type() == "Raster") {
-            return true;
-        }
-        for (auto t : nTensors) {
-            auto weakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(t)->mContent);
-            if (_featureInfoOrigin.find(weakPtr) != _featureInfoOrigin.end()) {
-                if (_featureInfoOrigin[weakPtr]->visited() == false) {
-                    auto name = _featureInfoOrigin[weakPtr]->name();
-                    float cosDis = _featureInfoOrigin[weakPtr]->computeDistance(fakeQuantedFeatures[name]);
-                    tensorCosDistanceMap[name].emplace_back(cosDis);
-                }
-            }
-        }
-        return true;
-    };
-    MNN::TensorCallBackWithInfo afterOrigin = [&](const std::vector<MNN::Tensor*>& nTensors,
-                                            const MNN::OperatorInfo* info) {
-        for (auto t : nTensors) {
-            auto weakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(t)->mContent);
-            if (_featureInfoOrigin.find(weakPtr) != _featureInfoOrigin.end()) {
-                if (_featureInfoOrigin[weakPtr]->visited() == false) {
-                    auto name = _featureInfoOrigin[weakPtr]->name();
-                    float cosDis = _featureInfoOrigin[weakPtr]->computeDistance(fakeQuantedFeatures[name]);
-                    tensorCosDistanceMap[name].emplace_back(cosDis);
-                }
-            }
-        }
-        return true;
-    };
     int count = 0;
 
     for (const auto& file : _calibrationFiles) {
@@ -1190,6 +1231,69 @@ void Calibration::_computeQuantError() {
             inputs[0] = _Input(mInputShape[mInputNames[0]], netInfo->inputs[0].order, netInfo->inputs[0].type);
             Helper::preprocessInput(_process.get(), _preprocessConfig, file, (MNN::Tensor*)inputs[0]->getTensor(), _inputType, inputs[0]);
         }
+        MNN::TensorCallBackWithInfo before = [&](const std::vector<MNN::Tensor*>& nTensors,
+                                                    const MNN::OperatorInfo* info) {
+                if (info->type() == "Raster") {
+                    return true;
+                }
+                for (auto t : nTensors) {
+                    auto weakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(t)->mContent);
+                    if (_featureInfo.find(weakPtr) != _featureInfo.end()) {
+                        if (_featureInfo[weakPtr]->visited() == false) {
+                            auto dequantFeatureAndOverflowRatio = _featureInfo[weakPtr]->fakeQuantFeature();
+                            fakeQuantedFeatures[_featureInfo[weakPtr]->name()] = dequantFeatureAndOverflowRatio.first;
+                            overflowRatiosMap[_featureInfo[weakPtr]->name()].emplace_back(dequantFeatureAndOverflowRatio.second);
+                        }
+                    }
+                }
+                return true;
+        };
+        MNN::TensorCallBackWithInfo after = [&](const std::vector<MNN::Tensor*>& nTensors,
+                                                    const MNN::OperatorInfo* info) {
+            for (auto t : nTensors) {
+                auto weakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(t)->mContent);
+                if (_featureInfo.find(weakPtr) != _featureInfo.end()) {
+                    if (_featureInfo[weakPtr]->visited() == false) {
+                        auto dequantFeatureAndOverflowRatio = _featureInfo[weakPtr]->fakeQuantFeature();
+                        fakeQuantedFeatures[_featureInfo[weakPtr]->name()] = dequantFeatureAndOverflowRatio.first;
+                        overflowRatiosMap[_featureInfo[weakPtr]->name()].emplace_back(dequantFeatureAndOverflowRatio.second);
+                    }
+                }
+            }
+            return true;
+        };
+
+        MNN::TensorCallBackWithInfo beforeOrigin = [&](const std::vector<MNN::Tensor*>& nTensors,
+                                                    const MNN::OperatorInfo* info) {
+            if (info->type() == "Raster") {
+                return true;
+            }
+            for (auto t : nTensors) {
+                auto weakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(t)->mContent);
+                if (_featureInfoOrigin.find(weakPtr) != _featureInfoOrigin.end()) {
+                    if (_featureInfoOrigin[weakPtr]->visited() == false) {
+                        auto name = _featureInfoOrigin[weakPtr]->name();
+                        float cosDis = _featureInfoOrigin[weakPtr]->computeDistance(fakeQuantedFeatures[name]);
+                        tensorCosDistanceMap[name].emplace_back(cosDis);
+                    }
+                }
+            }
+            return true;
+        };
+        MNN::TensorCallBackWithInfo afterOrigin = [&](const std::vector<MNN::Tensor*>& nTensors,
+                                                const MNN::OperatorInfo* info) {
+            for (auto t : nTensors) {
+                auto weakPtr = std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(t)->mContent);
+                if (_featureInfoOrigin.find(weakPtr) != _featureInfoOrigin.end()) {
+                    if (_featureInfoOrigin[weakPtr]->visited() == false) {
+                        auto name = _featureInfoOrigin[weakPtr]->name();
+                        float cosDis = _featureInfoOrigin[weakPtr]->computeDistance(fakeQuantedFeatures[name]);
+                        tensorCosDistanceMap[name].emplace_back(cosDis);
+                    }
+                }
+            }
+            return true;
+        };
         Express::Executor::getGlobalExecutor()->setCallBack(std::move(before), std::move(after));
         _module->onForward(inputs);
         Express::Executor::getGlobalExecutor()->setCallBack(std::move(beforeOrigin), std::move(afterOrigin));
@@ -1232,6 +1336,12 @@ void Calibration::_quantizeModelEMA() {
         originFormat = originInfo->order;
         originDims = originInfo->dim;
         originType = originInfo->type;
+    }
+    if (!_batchSetByUser && !originDims.empty() && originDims[0] > 0) {
+        if (_batch != originDims[0]) {
+            DLOG(INFO) << "batch_size not set, use model batch: " << originDims[0];
+            _batch = originDims[0];
+        }
     }
     _module.reset(NN::extract(varInputs, varOutputs, true), Module::destroy);
     NN::turnQuantize(_module.get(), _quant_bits, NN::PerTensor, NN::MovingAverage, _winogradOpt);
@@ -1424,7 +1534,7 @@ void Calibration::dumpTensorScales(const std::string& modelFile) {
             for (int i = 0; i < outputSize; ++i) {
                 const auto curOutputIndex = outputIndexes[i];
 
-                
+
                 auto weakPtr = _tensorMap[curOutputIndex].first.lock();
                 auto outputOpScale = _scales[weakPtr];
 

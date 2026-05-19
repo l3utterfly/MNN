@@ -28,41 +28,25 @@ ErrorCode QNNPermute::onEncode(const std::vector<Tensor *> &inputs, const std::v
     #endif
 
     mNodeType = "Transpose";
-    auto param = mOp->main_as_Permute();
-    auto axis = param->dims();
-    int size = (int) param->dims()->size();
-    MNN_ASSERT(size == dim);
     std::vector<uint32_t> mapRaw(dim, 0);
-    for (int i = 0; i < dim; i++) {
-        int index = axis->Get(i);
-        mapRaw[i] = (uint32_t) index;
+    if (mOp->type() == OpType_Permute) {
+        auto param = mOp->main_as_Permute();
+        auto axis = param->dims();
+        int size = (int) param->dims()->size();
+        MNN_ASSERT(size == dim);
+        for (int i = 0; i < dim; i++) {
+            int index = axis->Get(i);
+            mapRaw[i] = (uint32_t)index;
+        }
+    } else {
+        auto permutation = inputs[1]->host<int32_t>();
+        for (int i = 0; i < dim; i++) {
+            mapRaw[i] = (uint32_t)permutation[i];
+        }
     }
-
-    // Case NHWC
-    if (inputDimType == Tensor::TENSORFLOW) {
-        this->createParamTensor("perm", QNN_DATATYPE_UINT_32, {(uint32_t) dim}, mapRaw.data());
-        this->addNodeCommon(inputs, outputs);
-        return NO_ERROR;
-    }
-
-    // Case NCHW
-    std::vector<uint32_t> mapBefore(dim, 0);
-    for (int i = 0; i < dim; i++) {
-        mapBefore[i] = getNCHWAxis(i, dim, Tensor::DimensionType::TENSORFLOW);
-    }
-
-    std::vector<uint32_t> mapReal(dim, 0);
-
-    for (int j = 0; j < dim; j++) {
-        int temp0 = getNCHWAxis(j, dim, Tensor::DimensionType::TENSORFLOW);
-        int temp1 = mapRaw[temp0];
-        int temp2 = getNHWCAxis(temp1, dim, Tensor::DimensionType::CAFFE);
-
-        mapReal[j] = (uint32_t) temp2;
-    }
-
-    this->createParamTensor("perm", QNN_DATATYPE_UINT_32, {(uint32_t) dim}, mapReal.data());
-    this->addNodeCommon(inputs, outputs);
+    
+    this->createParamTensor("perm", QNN_DATATYPE_UINT_32, {(uint32_t) dim}, mapRaw.data());
+    this->addNodeCommon(inputs, outputs, 1, 1);
     return NO_ERROR;
 }
 
@@ -70,17 +54,12 @@ class QNNPermuteCreator : public QnnBackend::Creator {
 public:
     virtual QNNCommonExecution * onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs, const MNN::Op* op,
                                 Backend* backend) const override {
-        MNN_ASSERT(inputs.size() == 1 && outputs.size() == 1);\
-
-        if (op->main_as_Permute()->dims() == nullptr) {
-            return nullptr;
-        }
-
         return new QNNPermute(backend, op);
     }
 };
 
 REGISTER_QNN_OP_CREATOR(QNNPermuteCreator, OpType_Permute)
+REGISTER_QNN_OP_CREATOR(QNNPermuteCreator, OpType_Transpose)
 #endif
 } // end namespace QNN
 } // end namespace MNN

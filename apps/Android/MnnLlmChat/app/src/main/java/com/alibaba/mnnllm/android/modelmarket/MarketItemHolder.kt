@@ -17,10 +17,12 @@ import com.alibaba.mls.api.download.DownloadInfo
 import com.alibaba.mls.api.download.DownloadState
 import com.alibaba.mls.api.download.ModelDownloadManager
 import com.alibaba.mnnllm.android.R
+import com.alibaba.mnnllm.android.model.ModelTypeUtils
 import com.alibaba.mnnllm.android.model.ModelUtils
 import com.alibaba.mnnllm.android.utils.DialogUtils
 import com.alibaba.mnnllm.android.utils.FileUtils
 import com.alibaba.mnnllm.android.modelsettings.SettingsBottomSheetFragment
+import com.alibaba.mnnllm.android.modelsettings.DiffusionSettingsBottomSheetFragment
 import com.alibaba.mnnllm.android.widgets.ModelAvatarView
 import com.alibaba.mnnllm.android.widgets.TagsLayout
 import com.alibaba.mnnllm.android.modelmarket.ModelCardWebViewBottomSheet
@@ -151,6 +153,15 @@ class MarketItemHolder(
                 btnDownloadAction.text = btnDownloadAction.resources.getString(R.string.download)
                 setButtonStyle()
                 updateStatusText(downloadInfo)
+
+            }
+
+            DownloadState.PREPARING -> {
+                btnDownloadAction.visibility = View.VISIBLE
+                voiceDelegate.hideCheckbox()
+                btnDownloadAction.text = btnDownloadAction.resources.getString(R.string.download_pending)
+                setButtonStyle()
+                tvStatus.text = tvStatus.resources.getString(R.string.download_preparing)
             }
             
             DownloadState.DOWNLOADING -> {
@@ -399,17 +410,21 @@ class MarketItemHolder(
 
     private fun handleSettingsMenu(modelMarketItem: ModelMarketItem) {
         val context = itemView.context
-        if (ModelUtils.isDiffusionModel(modelMarketItem.modelName ?: "")) {
-            Toast.makeText(context, R.string.diffusion_model_not_alloed, Toast.LENGTH_SHORT).show()
-            return
-        }
-        
         val fragmentManager = (context as? AppCompatActivity)?.supportFragmentManager
         if (fragmentManager != null) {
-            val settingsSheet = SettingsBottomSheetFragment()
-            settingsSheet.setModelId(modelMarketItem.modelId ?: "")
-            settingsSheet.setConfigPath(null) // ModelMarketItem doesn't have localPath
-            settingsSheet.show(fragmentManager, SettingsBottomSheetFragment.TAG)
+            val modelId = modelMarketItem.modelId ?: ""
+            val modelName = modelMarketItem.modelName ?: modelId
+            if (ModelTypeUtils.isDiffusionModel(modelName) || ModelTypeUtils.isDiffusionModel(modelId)) {
+                val settingsSheet = DiffusionSettingsBottomSheetFragment()
+                settingsSheet.setModelId(modelId)
+                settingsSheet.setConfigPath(null)
+                settingsSheet.show(fragmentManager, DiffusionSettingsBottomSheetFragment.TAG)
+            } else {
+                val settingsSheet = SettingsBottomSheetFragment()
+                settingsSheet.setModelId(modelId)
+                settingsSheet.setConfigPath(null) // ModelMarketItem doesn't have localPath
+                settingsSheet.show(fragmentManager, SettingsBottomSheetFragment.TAG)
+            }
         }
     }
 

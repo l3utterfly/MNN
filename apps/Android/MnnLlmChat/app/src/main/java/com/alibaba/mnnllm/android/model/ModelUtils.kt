@@ -23,10 +23,11 @@ object ModelUtils {
     fun getVendor(modelName: String):String {
         // First try to get vendor from ModelMarketItem
         val modelItem = ModelListManager.getModelIdModelMap()[modelName]
-        if (modelItem?.modelMarketItem?.vendor != null) {
-            return modelItem.modelMarketItem!!.vendor
+        val marketItem = modelItem?.modelMarketItem as? com.alibaba.mnnllm.android.modelmarket.ModelMarketItem
+        if (marketItem?.vendor != null) {
+            return marketItem.vendor
         }
-        
+
         // If not available from market item, use the existing logic
         val modelLower = modelName.lowercase(Locale.getDefault())
         if (modelLower.contains("deepseek")) {
@@ -145,44 +146,10 @@ object ModelUtils {
         val totalDuration = metrics["total_timeus"] as Long * 1.0 / 1000000.0
         return String.format("Generate time: %.2f s", totalDuration)
     }
-    /**
-     * you can add ModelItem.fromLocalModel("Qwen-Omni-7B", "/data/local/tmp/omni_test/model")
-     * to load local models
-     */
-     val localModelList: MutableList<ModelItem> by lazy {
-        val result = mutableListOf<ModelItem>()
-        try {
-            val modelsDir = File("/data/local/tmp/mnn_models/")
-            if (modelsDir.exists() && modelsDir.isDirectory) {
-                modelsDir.listFiles()?.forEach { modelDir ->
-                    if (modelDir.isDirectory && File(modelDir, "config.json").exists()) {
-                        val modelPath = modelDir.absolutePath
-                        val modelId = "local/${modelPath}"
-                        result.add(ModelItem.fromLocalModel(modelId, modelPath))
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("ModelUtils", "Failed to load models from /data/local/tmp/mnn_models/", e)
-        }
-        result
-    }
+
 
     private fun isQwen3(modelName: String):Boolean {
         return modelName.lowercase(Locale.getDefault()).contains("qwen3")
-    }
-
-    fun isAudioModel(modelId: String): Boolean {
-        return modelId.lowercase(Locale.getDefault()).contains("audio") || isOmni(modelId)
-                || ModelListManager.isAudioModel(modelId)
-    }
-
-    fun isMultiModalModel(modelName: String): Boolean {
-        return isAudioModel(modelName) || isVisualModel(modelName) || isDiffusionModel(modelName) || isOmni(modelName)
-    }
-
-    fun isDiffusionModel(modelName: String): Boolean {
-        return modelName.lowercase(Locale.getDefault()).contains("stable-diffusion")
     }
 
     @JvmStatic
@@ -193,72 +160,8 @@ object ModelUtils {
         return modelId
     }
 
-    fun isVisualModel(modelId: String): Boolean {
-        return modelId.lowercase(Locale.getDefault()).contains("vl") || isOmni(modelId) ||
-                ModelListManager.isVisualModel(modelId)
-    }
-
-    fun isR1Model(modelName: String): Boolean {
-        return modelName.lowercase(Locale.getDefault()).contains("deepseek-r1")
-    }
-
     fun safeModelId(modelId: String): String {
         return modelId.replace("/".toRegex(), "_")
-    }
-
-    fun isOmni(modelName: String): Boolean {
-        return modelName.lowercase(Locale.getDefault()).contains("omni")
-    }
-
-    fun isSupportThinkingSwitchByTags(extraTags: List<String>): Boolean {
-        return extraTags.any { it.equals("ThinkingSwitch", ignoreCase = true) }
-    }
-
-    fun supportAudioOutput(modelName: String): Boolean {
-        return isOmni(modelName)
-    }
-
-    /**
-     * Check if the model is a TTS (Text-to-Speech) model
-     */
-    fun isTtsModel(modelName: String): Boolean {
-        return modelName.lowercase(Locale.getDefault()).contains("bert-vits") ||
-               modelName.lowercase(Locale.getDefault()).contains("tts")
-    }
-
-    /**
-     * Check if the model is a TTS model based on tags
-     */
-    fun isTtsModelByTags(tags: List<String>): Boolean {
-        return tags.any { it.equals("TTS", ignoreCase = true) }
-    }
-
-    /**
-     * Check if the model is an ASR (Automatic Speech Recognition) model based on tags
-     */
-    fun isAsrModelByTags(tags: List<String>): Boolean {
-        return tags.any { it.equals("ASR", ignoreCase = true) }
-    }
-
-    /**
-     * Check if the model is a thinking model based on tags
-     */
-    fun isThinkingModelByTags(tags: List<String>): Boolean {
-        return tags.any { it.equals("Think", ignoreCase = true) }
-    }
-
-    /**
-     * Check if the model is a visual model based on tags
-     */
-    fun isVisualModelByTags(tags: List<String>): Boolean {
-        return tags.any { it.equals("Vision", ignoreCase = true) }
-    }
-
-    /**
-     * Check if the model is an audio model based on tags
-     */
-    fun isAudioModelByTags(tags: List<String>): Boolean {
-        return tags.any { it.equals("Audio", ignoreCase = true) }
     }
 
     //split "Huggingface/taobao-mnn/Qwen-1.5B" to ["Huggingface", "taobao-mnn/Qwen-1.5B"]
@@ -302,20 +205,30 @@ object ModelUtils {
     }
 
     fun getConfigPathForModel(modelId: String): String? {
-        return if (isDiffusionModel(modelId)) {
-            ModelDownloadManager.getInstance(ApplicationProvider.get())
-                .getDownloadedFile(modelId)?.absolutePath
+        return if (ModelTypeUtils.isDiffusionModel(modelId)) {
+            // For diffusion models, check if it's a local model first
+            if (modelId.startsWith("local/")) {
+                ModelConfig.getDefaultConfigFile(modelId)
+            } else {
+                ModelDownloadManager.getInstance(ApplicationProvider.get())
+                    .getDownloadedFile(modelId)?.absolutePath
+            }
         } else {
             ModelConfig.getDefaultConfigFile(modelId)
         }
     }
 
     fun getConfigPathForModel(modelItem: ModelItem): String? {
-        val modelId = modelItem.modelId!!
-        val modelName = modelItem.modelName!!
+        val modelId = modelItem.modelId ?: return null
+        val modelName = modelItem.modelName ?: if (modelItem.isLocal) {
+             // Extract name from local path e.g. local//data/.../Name -> Name
+             modelId.substringAfterLast("/")
+        } else ""
 
-        return if (isDiffusionModel(modelName)) {
-            if (modelItem.isLocal) {
+        return if (ModelTypeUtils.isDiffusionModel(modelName)) {
+            if (modelItem.isBuiltin) {
+                ModelConfig.getDefaultConfigFile(modelId)
+            } else if (modelItem.isLocal) {
                 // For local models, use the local path directly
                 modelItem.localPath
             } else {
@@ -323,7 +236,9 @@ object ModelUtils {
                     .getDownloadedFile(modelId)?.absolutePath
             }
         } else {
-            if (modelItem.isLocal) {
+            if (modelItem.isBuiltin) {
+                ModelConfig.getDefaultConfigFile(modelId)
+            } else if (modelItem.isLocal) {
                 // For local models, look for config.json in the same directory
                 val localPath = modelItem.localPath
                 if (!localPath.isNullOrEmpty()) {
@@ -381,6 +296,7 @@ object ModelUtils {
             else -> null
         }
     }
+
 
     private const val TAG = "ModelUtils"
 }

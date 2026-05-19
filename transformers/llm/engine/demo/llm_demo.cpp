@@ -105,13 +105,24 @@ static int benchmark(Llm* llm, const std::vector<std::string>& prompts, int max_
         if (prompt.substr(0, 1) == "#") {
             continue;
         }
+        
         if (max_token_number >= 0) {
             llm->response(prompt, &std::cout, nullptr, 0);
             while (!llm->stoped() && context->gen_seq_len < max_token_number) {
                 llm->generate(1);
+                // Check for errors
+                if(context->status == LlmStatus::INTERNAL_ERROR) {
+                    MNN_ERROR("Error: Generation failed due to internal error\n");
+                    return -1;
+                }
             }
         } else {
             llm->response(prompt);
+            // Check for errors after response
+            if(context->status == LlmStatus::INTERNAL_ERROR) {
+                MNN_ERROR("Error: Response generation failed due to internal error\n");
+                return -1;
+            }
         }
         prompt_len += context->prompt_len;
         decode_len += context->gen_seq_len;
@@ -134,21 +145,21 @@ static int benchmark(Llm* llm, const std::vector<std::string>& prompts, int max_
     if (context->audio_input_s > 0.0f) {
         audio_speed = context->audio_input_s / audio_s;
     }
-    printf("\n#################################\n");
-    printf("prompt tokens num = %d\n", prompt_len);
-    printf("decode tokens num = %d\n", decode_len);
-    printf(" vision time = %.2f s\n", vision_s);
-    printf(" pixels_mp = %.2f MP\n", context->pixels_mp);
-    printf("  audio process time = %.2f s\n", audio_s);
-    printf("  audio input time = %.2f s\n", context->audio_input_s);
-    printf("prefill time = %.2f s\n", prefill_s);
-    printf(" decode time = %.2f s\n", decode_s);
-    printf(" sample time = %.2f s\n", sample_s);
-    printf("prefill speed = %.2f tok/s\n", prompt_len / prefill_s);
-    printf(" decode speed = %.2f tok/s\n", decode_len / decode_s);
-    printf(" vision speed = %.3f MP/s\n", vision_speed);
-    printf(" audio RTF = %.3f \n", audio_s / context->audio_input_s);
-    printf("##################################\n");
+    MNN_PRINT("\n#################################\n");
+    MNN_PRINT("prompt tokens num = %d\n", prompt_len);
+    MNN_PRINT("decode tokens num = %d\n", decode_len);
+    MNN_PRINT(" vision time = %.2f s\n", vision_s);
+    MNN_PRINT(" pixels_mp = %.2f MP\n", context->pixels_mp);
+    MNN_PRINT("  audio process time = %.2f s\n", audio_s);
+    MNN_PRINT("  audio input time = %.2f s\n", context->audio_input_s);
+    MNN_PRINT("prefill time = %.2f s\n", prefill_s);
+    MNN_PRINT(" decode time = %.2f s\n", decode_s);
+    MNN_PRINT(" sample time = %.2f s\n", sample_s);
+    MNN_PRINT("prefill speed = %.2f tok/s\n", prompt_len / prefill_s);
+    MNN_PRINT(" decode speed = %.2f tok/s\n", decode_len / decode_s);
+    MNN_PRINT(" vision speed = %.3f MP/s\n", vision_speed);
+    MNN_PRINT(" audio RTF = %.3f \n", audio_s / context->audio_input_s);
+    MNN_PRINT("##################################\n");
     return 0;
 }
 
@@ -164,12 +175,12 @@ static int ceval(Llm* llm, const std::vector<std::string>& lines, std::string fi
         prompt += "\nC. " + elements[4];
         prompt += "\nD. " + elements[5];
         prompt += "\n\n";
-        printf("%s", prompt.c_str());
-        printf("## 进度: %d / %lu\n", i, lines.size() - 1);
+        MNN_PRINT("%s", prompt.c_str());
+        MNN_PRINT("## 进度: %d / %lu\n", i, lines.size() - 1);
         std::ostringstream lineOs;
         llm->response(prompt.c_str(), &lineOs);
         auto line = lineOs.str();
-        printf("%s", line.c_str());
+        MNN_PRINT("%s", line.c_str());
         answers.push_back(line);
     }
     {
@@ -239,6 +250,8 @@ void chat(Llm* llm) {
         }
         if (user_str == "/reset") {
             llm->reset();
+            messages.clear();
+            messages.emplace_back("system", "You are a helpful assistant.");
             std::cout << "\nA: reset done." << std::endl;
             continue;
         }
@@ -254,9 +267,6 @@ int main(int argc, const char* argv[]) {
         std::cout << "Usage: " << argv[0] << " config.json <prompt.txt>" << std::endl;
         return 0;
     }
-    MNN::BackendConfig backendConfig;
-    auto executor = MNN::Express::Executor::newExecutor(MNN_FORWARD_CPU, backendConfig, 1);
-    MNN::Express::ExecutorScope s(executor);
 
     std::string config_path = argv[1];
     std::cout << "config path is " << config_path << std::endl;

@@ -11,15 +11,18 @@
 #endif
 #include <regex>
 #include <algorithm>
+#include <random>
 #include <MNN/AutoTime.hpp>
 #include <MNN/expr/ExecutorScope.hpp>
 #include "omni.hpp"
 #include "kvmeta.hpp"
 #include "llmconfig.hpp"
-#include "tokenizer.hpp"
+#include "tokenizer/tokenizer.hpp"
 #include "diskembedding.hpp"
 #include "sampler.hpp"
+#ifdef LLM_SUPPORT_HTTP_RESOURCE
 #include "httplib.h"
+#endif
 #ifdef LLM_SUPPORT_VISION
 #include <cv/cv.hpp>
 #endif
@@ -66,23 +69,21 @@ Omni::Omni(std::shared_ptr<LlmConfig> config) : Llm(config) {
         mVisionMaxSize = config->config_.value("image_max_size", mVisionMaxSize);
         mVisionGlobal = config->config_.value("global_image", mVisionGlobal);
     }
-    if (config->is_audio()) {}
+    if (config->is_audio()) {
+        mAudioPad = config->config_.value("audio_pad", mAudioPad);
+        mAudioStart = config->config_.value("audio_start", mAudioStart);
+        mAudioEnd = config->config_.value("audio_end", mAudioEnd);
+    }
 }
 
 bool Omni::load() {
+    MNN::Express::ExecutorScope s(mExecutor);
     auto res = Llm::load();
     if (!res) {
         return false;
     }
-    if (mConfig->has_talker()) {
-        mTalker.reset(new Talker(mConfig, this));
-        res = mTalker->load();
-    }
-    if (!res) {
-        return false;
-    }
     ScheduleConfig config;
-    if (mConfig->mllm_config_.empty()) {
+    if (mConfig->mllm_config_.is_null()) {
         mProcessorRuntimeManager = mRuntimeManager;
     } else {
         BackendConfig cpuBackendConfig;
@@ -108,7 +109,18 @@ bool Omni::load() {
         }
         config.backendConfig = &cpuBackendConfig;
         mProcessorRuntimeManager.reset(Executor::RuntimeManager::createRuntimeManager(config));
-        setRuntimeHint(mProcessorRuntimeManager);
+        setRuntimeHint(mProcessorRuntimeManager, true);
+    }
+    if (mConfig->has_talker()) {
+        mTalker.reset(new Talker(mConfig, this));
+        mTalker->setProcessorRuntimeManager(mProcessorRuntimeManager);
+        res = mTalker->load();
+    }
+    if (!res) {
+        return false;
+    }
+    if (mConfig->has_deepstack()) {
+        mExtraArgs.emplace_back(Express::_Fill(_var<int>({3, 1, 1}, {3}), _Scalar<float>(0.0)));
     }
     Module::Config module_config;
     if(config.type == MNN_FORWARD_NN) {
@@ -118,6 +130,10 @@ bool Omni::load() {
         module_config.shapeMutable = true;
         module_config.rearrange    = true;
     }
+    // Reset KVCACHE_INFO to nullptr so vision encoder's self-attention is
+    // not affected by the LLM's kvcache metadata. Otherwise past-kv from LLM
+    // accumulates during each vision forward, causing inference time to grow.
+    mProcessorRuntimeManager->setHintPtr(Interpreter::KVCACHE_INFO, nullptr);
     if (mConfig->is_visual()) {
         mVisionModule.reset(Module::load({}, {}, mConfig->visual_model().c_str(), mProcessorRuntimeManager, &module_config));
         if (nullptr == mVisionModule.get()) {
@@ -130,11 +146,13 @@ bool Omni::load() {
             return false;
         }
     }
+    mContext->status = LlmStatus::RUNNING;  // Set status to RUNNING after successful load
     return true;
 }
 
 #ifdef LLM_SUPPORT_VISION
 std::vector<int> Omni::defaultVisionProcess(VARP image) {
+    MNN::Express::ExecutorScope s(mExecutor);
     mVisionHeight = UP_DIV(mVisionHeight, mVisionSizeUnit) * mVisionSizeUnit;
     mVisionWidth  = UP_DIV(mVisionWidth, mVisionSizeUnit) * mVisionSizeUnit;
     image = MNN::CV::resize(image, {mVisionWidth, mVisionHeight}, 0, 0,
@@ -154,13 +172,139 @@ std::vector<int> Omni::defaultVisionProcess(VARP image) {
     return imgIds;
 }
 
+std::vector<int> Omni::gemma4VisionProcess(VARP image) {
+    MNN::Express::ExecutorScope s(mExecutor);
+    const int patch_size = 16;
+    const int pooling_kernel_size = 3;
+    int max_soft_tokens = 280;
+    int max_patches = max_soft_tokens * pooling_kernel_size * pooling_kernel_size; // 2520
+    int patch_pixels = 3 * patch_size * patch_size; // 768
+
+    // 1. Resize preserving aspect ratio, aligned to patch_size * pooling_kernel_size
+    int align_size = patch_size * pooling_kernel_size; // 48
+    mVisionHeight = round(mVisionHeight / (float)align_size) * align_size;
+    mVisionWidth  = round(mVisionWidth / (float)align_size) * align_size;
+    if (mVisionHeight < align_size) mVisionHeight = align_size;
+    if (mVisionWidth < align_size) mVisionWidth = align_size;
+    // Ensure total patches <= max_patches
+    int total_patches = (mVisionHeight / patch_size) * (mVisionWidth / patch_size);
+    while (total_patches > max_patches) {
+        if (mVisionHeight >= mVisionWidth) {
+            mVisionHeight -= align_size;
+        } else {
+            mVisionWidth -= align_size;
+        }
+        total_patches = (mVisionHeight / patch_size) * (mVisionWidth / patch_size);
+    }
+
+    // 2. Resize and rescale to [0, 1]
+    std::vector<float> mean = {0.0f, 0.0f, 0.0f};
+    std::vector<float> norm = {1.0f/255.0f, 1.0f/255.0f, 1.0f/255.0f};
+    image = MNN::CV::resize(image, {mVisionWidth, mVisionHeight}, 0, 0,
+                            MNN::CV::INTER_LINEAR, MNN::CV::COLOR_BGR2RGB,
+                            mean, norm);
+    // 3. Patchify: CV::resize outputs [H, W, 3] but readMap returns NC4HW4 packed data (stride=4)
+    int grid_h = mVisionHeight / patch_size;
+    int grid_w = mVisionWidth / patch_size;
+    int num_patches = grid_h * grid_w;
+    {
+        auto srcPtr = image->readMap<float>();
+        auto patches = _Input({num_patches, patch_pixels}, NCHW);
+        auto dstPtr = patches->writeMap<float>();
+        int W = mVisionWidth;
+        // CV::resize output is NHWC [H,W,3], stride=3
+        for (int ph = 0; ph < grid_h; ph++) {
+            for (int pw = 0; pw < grid_w; pw++) {
+                int patchIdx = ph * grid_w + pw;
+                float* dst = dstPtr + patchIdx * patch_pixels;
+                int di = 0;
+                for (int dy = 0; dy < patch_size; dy++) {
+                    for (int dx = 0; dx < patch_size; dx++) {
+                        int y = ph * patch_size + dy;
+                        int x = pw * patch_size + dx;
+                        int offset = (y * W + x) * 3;
+                        for (int c = 0; c < 3; c++) {
+                            dst[di++] = srcPtr[offset + c];
+                        }
+                    }
+                }
+            }
+        }
+        image = patches;
+    }
+
+    // 4. Generate position_ids: [num_patches, 2] as (x, y)
+    auto posIds = _Input({num_patches, 2}, NCHW, halide_type_of<int>());
+    auto posPtr = posIds->writeMap<int>();
+    for (int h = 0; h < grid_h; h++) {
+        for (int w = 0; w < grid_w; w++) {
+            int idx = h * grid_w + w;
+            posPtr[idx * 2 + 0] = w;  // x
+            posPtr[idx * 2 + 1] = h;  // y
+        }
+    }
+
+    // 5. Pad to max_patches
+    if (num_patches < max_patches) {
+        int pad_len = max_patches - num_patches;
+        auto pad_patches = Express::_Input({pad_len, patch_pixels}, NCHW);
+        ::memset(pad_patches->writeMap<float>(), 0, pad_len * patch_pixels * sizeof(float));
+        image = Express::_Concat({image, pad_patches}, 0);
+
+        auto pad_pos = Express::_Input({pad_len, 2}, NCHW, halide_type_of<int>());
+        auto padPosPtr = pad_pos->writeMap<int>();
+        for (int i = 0; i < pad_len * 2; i++) padPosPtr[i] = -1;
+        posIds = Express::_Concat({posIds, pad_pos}, 0);
+    }
+
+    // 6. Add batch dimension: [1, max_patches, ...]
+    image = Express::_Unsqueeze(image, {0});
+    posIds = Express::_Unsqueeze(posIds, {0});
+
+    // Run vision model (outputs fixed max_soft_tokens)
+    auto outputs = mVisionModule->onForward({image, posIds});
+    auto imageEmbedding = outputs[0];
+
+    // Squeeze batch dim: [1, max_soft_tokens, hidden] -> [max_soft_tokens, hidden]
+    imageEmbedding = Express::_Squeeze(imageEmbedding, {0});
+    // Pre-compensate: ONNX model multiplies ALL positions by scale_emb(39.25).
+    // Divide vision embedding here so after ONNX multiply it restores to original.
+    imageEmbedding = imageEmbedding * _Scalar<float>(1.0f / 39.25f);
+    // Transpose for MNN format: [seq, hidden] -> [seq, 1, hidden]
+    imageEmbedding = Express::_Unsqueeze(imageEmbedding, {1});
+
+    // Only use actual (non-padding) soft tokens, not the full 280
+    int actual_soft_tokens = num_patches / (pooling_kernel_size * pooling_kernel_size);
+    if (actual_soft_tokens < imageEmbedding->getInfo()->dim[0]) {
+        // Slice to [actual_soft_tokens, 1, hidden]
+        auto sliced = _Input({actual_soft_tokens, 1, mConfig->hidden_size()}, NCHW);
+        auto src = imageEmbedding->readMap<float>();
+        ::memcpy(sliced->writeMap<float>(), src, actual_soft_tokens * mConfig->hidden_size() * sizeof(float));
+        imageEmbedding = sliced;
+    }
+    mVisionEmbeddings.push_back(imageEmbedding);
+    int visionLen = actual_soft_tokens;
+    std::vector<int> imgIds(visionLen, mVisionPad);
+    if (mVisionStart >= 0 && mVisionEnd >= 0) {
+        imgIds.insert(imgIds.begin(), mVisionStart);
+        imgIds.push_back(mVisionEnd);
+    }
+    return imgIds;
+}
+
 std::vector<int> Omni::qwen2VisionProcess(VARP image) {
     AUTOTIME;
+    MNN::Express::ExecutorScope s(mExecutor);
     const auto inputNames = mVisionModule->getInfo()->inputNames;
     bool hasWindowIndex = inputNames.size() == 4 && inputNames[3] == "window_index";
-    // Qwen2-VL / Qwen2.5-VL
-    mVisionHeight = round(mVisionHeight / 28.0) * 28;
-    mVisionWidth = round(mVisionWidth / 28.0) * 28;
+    bool isQwen3VL = inputNames.size() == 5 && inputNames[3] == "idx_tensor";
+    const int patch_size = isQwen3VL ? 16 : 14;
+    constexpr int temporal_patch_size = 2;
+    constexpr int merge_size = 2;
+    const int align_size = patch_size * merge_size;
+    // Qwen2-VL / Qwen2.5-VL / Qwen3-VL
+    mVisionHeight = round(mVisionHeight / (float)align_size) * align_size;
+    mVisionWidth = round(mVisionWidth / (float)align_size) * align_size;
     image = MNN::CV::resize(image, {mVisionWidth, mVisionHeight}, 0, 0,
                             MNN::CV::INTER_LINEAR, MNN::CV::COLOR_BGR2RGB,
                             mVisionMean, mVisionNorm);
@@ -172,9 +316,6 @@ std::vector<int> Omni::qwen2VisionProcess(VARP image) {
     int channel  = patches_dim[1];
     int height   = patches_dim[2];
     int width    = patches_dim[3];
-    constexpr int temporal_patch_size = 2;
-    constexpr int patch_size = 14;
-    constexpr int merge_size = 2;
     int grid_t = temporal / temporal_patch_size;
     int grid_h = height / patch_size;
     int grid_w = width / patch_size;
@@ -210,7 +351,7 @@ std::vector<int> Omni::qwen2VisionProcess(VARP image) {
     VARP attention_mask, window_index;
     VARPS moduleInputs= {patches, position_ids};
     if (hasWindowIndex) {
-        // build window_index
+        // Qwen2.5-VL: build window_index
         window_index = Express::_Input({seq_len / 4}, NCHW, halide_type_of<int>());
         auto window_index_ptr = window_index->writeMap<int>();
         const int merge_unit = merge_size * merge_size;
@@ -273,6 +414,50 @@ std::vector<int> Omni::qwen2VisionProcess(VARP image) {
         ::memset(attention_mask->writeMap<float>(), 0, seq_len * seq_len * sizeof(float));
         moduleInputs.push_back(attention_mask);
     }
+    if (isQwen3VL) {
+        // Qwne3-VL
+        const int num_grid = mConfig->config_.value("num_grid_per_side", 1);
+        const int num_patches = grid_h * grid_w;
+        std::vector<float> h_idxs(grid_h);
+        std::vector<float> w_idxs(grid_w);
+        for (int i = 0; i < grid_h; ++i) {
+            h_idxs[i] = static_cast<float>(i) * (num_grid - 1) / (grid_h - 1);
+        }
+        for (int i = 0; i < grid_w; ++i) {
+            w_idxs[i] = static_cast<float>(i) * (num_grid - 1) / (grid_w - 1);
+        }
+        auto idx_tensor = Express::_Input({4, num_patches}, NCHW, halide_type_of<int>());
+        auto weight_tensor = Express::_Input({4, num_patches}, NCHW, halide_type_of<float>());
+        auto idx_ptr = idx_tensor->writeMap<int>();
+        auto weight_ptr = weight_tensor->writeMap<float>();
+        for (int i = 0; i < grid_h; ++i) {
+            int h_idx_floor = static_cast<int>(h_idxs[i]);
+            int h_idx_ceil = std::min(h_idx_floor + 1, num_grid - 1);
+            float dh = h_idxs[i] - h_idx_floor;
+            for (int j = 0; j < grid_w; ++j) {
+                int w_idx_floor = static_cast<int>(w_idxs[j]);
+                int w_idx_ceil = std::min(w_idx_floor + 1, num_grid - 1);
+                float dw = w_idxs[j] - w_idx_floor;
+                int idx = i * grid_w + j;
+                idx_ptr[0 * num_patches + idx] = h_idx_floor * num_grid + w_idx_floor;
+                idx_ptr[1 * num_patches + idx] = h_idx_floor * num_grid + w_idx_ceil;
+                idx_ptr[2 * num_patches + idx] = h_idx_ceil * num_grid + w_idx_floor;
+                idx_ptr[3 * num_patches + idx] = h_idx_ceil * num_grid + w_idx_ceil;
+                weight_ptr[0 * num_patches + idx] = (1.0f - dh) * (1.0f - dw);
+                weight_ptr[1 * num_patches + idx] = (1.0f - dh) * dw;
+                weight_ptr[2 * num_patches + idx] = dh * (1.0f - dw);
+                weight_ptr[3 * num_patches + idx] = dh * dw;
+            }
+        }
+        idx_tensor = Express::_Reshape(idx_tensor, {4, grid_t, grid_h / merge_size, merge_size, grid_w / merge_size, merge_size});
+        idx_tensor = Express::_Permute(idx_tensor, {0, 1, 2, 4, 3, 5});
+        idx_tensor = Express::_Reshape(idx_tensor, {4, -1});
+        weight_tensor = Express::_Reshape(weight_tensor, {4, grid_t, grid_h / merge_size, merge_size, grid_w / merge_size, merge_size});
+        weight_tensor = Express::_Permute(weight_tensor, {0, 1, 2, 4, 3, 5});
+        weight_tensor = Express::_Reshape(weight_tensor, {4, -1});
+        moduleInputs.push_back(idx_tensor);
+        moduleInputs.push_back(weight_tensor);
+    }
 #ifdef DEBUG_IMAGE
     patches.fix(MNN::Express::VARP::CONSTANT);
     patches->setName("patches");
@@ -282,7 +467,11 @@ std::vector<int> Omni::qwen2VisionProcess(VARP image) {
     attention_mask->setName("attention_mask");
     MNN::Express::Variable::save({patches, position_ids, attention_mask}, "input.mnn");
 #endif
-    auto imageEmbedding = mVisionModule->onForward(moduleInputs)[0];
+    auto outputs = mVisionModule->onForward(moduleInputs);
+    auto imageEmbedding = outputs[0];
+    if (outputs.size() == 2) {
+        mDeepStackEmbeddings.push_back(outputs[1]);
+    }
 #ifdef DEBUG_IMAGE
     imageEmbedding->setName("image_embeds");
     MNN::Express::Variable::save({imageEmbedding}, "output.mnn");
@@ -296,14 +485,22 @@ std::vector<int> Omni::qwen2VisionProcess(VARP image) {
 }
 
 std::vector<int> Omni::smolvlmVisionProcess(VARP image) {
-    // SmolVLM
-    constexpr int visionLen = 64;
+    MNN::Express::ExecutorScope s(mExecutor);
+    // SmolVLM / LFM2-VL: compute visionLen from global image forward
     bool splitImage = mVisionHeight > mVisionSizeUnit || mVisionWidth > mVisionSizeUnit;
     auto globalImage = MNN::CV::resize(image, {mVisionSizeUnit, mVisionSizeUnit}, 0, 0,
                                        MNN::CV::INTER_LINEAR, MNN::CV::COLOR_BGR2RGB,
                                        mVisionMean, mVisionNorm);
     globalImage = Express::_Unsqueeze(globalImage, {0});
     globalImage = Express::_Convert(globalImage, NCHW);
+    // Forward global image first to determine visionLen dynamically
+    auto globalEmbedding = mVisionModule->forward(globalImage);
+    auto globalDims = globalEmbedding->getInfo()->dim;
+    // globalEmbedding shape: (1, visionLen, 1, hidden) or (visionLen, 1, hidden)
+    int visionLen = (globalDims.size() >= 3) ? globalDims[globalDims.size() - 3] : globalDims[0];
+    if (globalDims.size() >= 4) {
+        visionLen = globalDims[1];
+    }
     std::vector<int> imgIds;
     if (splitImage) {
         mVisionHeight = round(mVisionHeight / (float)mVisionSizeUnit) * mVisionSizeUnit;
@@ -339,13 +536,14 @@ std::vector<int> Omni::smolvlmVisionProcess(VARP image) {
             mVisionSizeUnit,
             mVisionSizeUnit
         });
-        patches = _Concat({patches, globalImage}, 0);
         auto imageEmbedding = mVisionModule->forward(patches);
         auto embeddingDims = imageEmbedding->getInfo()->dim;
         for (int i = 0; i < embeddingDims[0]; i++) {
             auto embedding = _Squeeze(_GatherV2(imageEmbedding, _var<int>({i}, {1}), _var<int>({0}, {1})), {0});
             mVisionEmbeddings.push_back(embedding);
         }
+        // Add global image embedding (already computed)
+        mVisionEmbeddings.push_back(_Squeeze(globalEmbedding, {0}));
         int endRow = tokenizer_encode("\n")[0];
         for (int h = 0; h < grid_h; h++) {
             for (int w = 0; w < grid_w; w++) {
@@ -361,8 +559,7 @@ std::vector<int> Omni::smolvlmVisionProcess(VARP image) {
         }
         imgIds.push_back(endRow);
     } else {
-        auto imageEmbedding = mVisionModule->forward(globalImage);
-        mVisionEmbeddings.push_back(_Squeeze(imageEmbedding, {0}));
+        mVisionEmbeddings.push_back(_Squeeze(globalEmbedding, {0}));
     }
     // global image ids
     imgIds.push_back(mVisionStart);
@@ -444,6 +641,7 @@ std::vector<std::pair<int, int>> minicpmBestSize(std::pair<int, int> original_si
 }
 
 std::vector<int> Omni::minicpmVisionProcess(VARP image) {
+    MNN::Express::ExecutorScope s(mExecutor);
     constexpr int visionLen = 64, patchesPerSide = 70;
     const int patchSize = mVisionSizeUnit;
     auto bestSize = minicpmBestSize(std::make_pair(mVisionHeight, mVisionWidth), patchSize);
@@ -593,8 +791,16 @@ std::vector<int> Omni::visionProcess(VARP image) {
         } else {
             imgIds = minicpmVisionProcess(image);
         }
+    } else if (inputNames.size() >= 2 && inputNames[0] == "input_patches") {
+        imgIds = gemma4VisionProcess(image);
     } else {
         imgIds = defaultVisionProcess(image);
+    }
+    bool async = mConfig->config_.value("async", true);
+    if (!async) {
+        for (auto& embd : mVisionEmbeddings) {
+            embd->readMap<float>();
+        }
     }
     mContext->vision_us += _t.durationInUs();
     mContext->pixels_mp += (mVisionWidth / 1000.0f) * (mVisionHeight / 1000.0f);
@@ -608,6 +814,7 @@ std::vector<int> Omni::visionProcess(VARP image) {
 
 std::vector<int> Omni::audioProcess(const std::string& file) {
 #ifdef LLM_SUPPORT_AUDIO
+    MNN::Express::ExecutorScope s(mExecutor);
     constexpr int sample_rate = 16000;
     auto load_res        = MNN::AUDIO::load(file, sample_rate);
     VARP waveform        = load_res.first;
@@ -624,13 +831,38 @@ std::vector<int> Omni::audioProcess(const std::string& file) {
 
 std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
 #ifdef LLM_SUPPORT_AUDIO
+    MNN::Express::ExecutorScope s(mExecutor);
     if (waveform == nullptr) {
         MNN_PRINT("Omni Can't process audio: waveform is null\n");
         return std::vector<int>(0);
     }
 
     Timer _t;
-    auto input_features  = MNN::AUDIO::whisper_fbank(waveform);
+    VARP input_features;
+    auto audio_type = mConfig->audio_type();
+    if (audio_type == "conformer") {
+        input_features = MNN::AUDIO::conformer_fbank(waveform);
+    } else if (audio_type == "usm") {
+        input_features = MNN::AUDIO::usm_fbank(waveform);
+    } else {
+        input_features = MNN::AUDIO::whisper_fbank(waveform);
+    }
+    if (input_features == nullptr || input_features->getInfo() == nullptr) {
+        MNN_PRINT("Omni audio fbank failed\n");
+        return std::vector<int>(0);
+    }
+    // Materialize fbank output: fbank returns a lazy VARP with computation graph
+    // dependencies that can crash Module::forward when using a different RuntimeManager.
+    {
+        auto info = input_features->getInfo();
+        auto ptr = input_features->readMap<float>();
+        auto fresh = _Input(info->dim, NCHW, halide_type_of<float>());
+        ::memcpy(fresh->writeMap<float>(), ptr, info->size * sizeof(float));
+        input_features = fresh;
+    }
+    // Reset KVCACHE_INFO to nullptr so audio encoder's self-attention is
+    // not affected by the LLM's kvcache metadata.
+    mProcessorRuntimeManager->setHintPtr(Interpreter::KVCACHE_INFO, nullptr);
     VARP audio_embedding;
     if (mAudioModule->getInfo()->inputNames.size() > 1) {
         int seqlen = UP_DIV(input_features->getInfo()->dim[2], 2);
@@ -660,19 +892,38 @@ std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
         }
         audio_embedding = mAudioModule->onForward({input_features, attention_mask})[0];
     } else {
-        // Qwen2-Audio just support audio time <= 30s
-        if (input_features->getInfo()->dim[2] > 3000) {
+        if (audio_type != "conformer" && input_features->getInfo()->dim[2] > 3000) {
+            // Qwen2-Audio just support audio time <= 30s
             input_features = _Slice(input_features, _var<int>({0, 0, 0}, {3}), _var<int>({-1, -1, 3000}, {3}));
         }
         audio_embedding = mAudioModule->forward(input_features);
     }
 
+    // Permute to [T, 1, H]
     audio_embedding = _Permute(audio_embedding, {1, 0, 2});
+    if (audio_type == "usm") {
+        // Pre-divide by scale_emb: ONNX model multiplies ALL positions by scale_emb.
+        // Dividing audio here ensures it restores to original after the multiply.
+        float scale_emb = std::sqrt(static_cast<float>(mConfig->hidden_size()));
+        audio_embedding = audio_embedding * _Scalar<float>(1.0f / scale_emb);
+    }
     mContext->audio_us = _t.durationInUs();
     mAudioEmbeddings.push_back(audio_embedding);
+    bool async = mConfig->config_.value("async", true);
+    if (!async) {
+        for (auto& embd : mAudioEmbeddings) {
+            embd->readMap<float>();
+        }
+    }
     int embed_len = audio_embedding->getInfo()->dim[0];
     addPositionIds(embed_len);
     std::vector<int> audio_ids(embed_len, mAudioPad);
+    if (mAudioStart >= 0) {
+        audio_ids.insert(audio_ids.begin(), mAudioStart);
+    }
+    if (mAudioEnd >= 0) {
+        audio_ids.push_back(mAudioEnd);
+    }
     return audio_ids;
 #else
     return std::vector<int>(0);
@@ -680,6 +931,7 @@ std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
 }
 
 std::vector<int> Omni::multimodeProcess(const std::string& mode, std::string info) {
+    MNN::Express::ExecutorScope s(mExecutor);
     auto file_info = info;
     if (mode == "img") {
         std::regex hw_regex(R"(<hw>(.*?)</hw>)");
@@ -706,6 +958,7 @@ std::vector<int> Omni::multimodeProcess(const std::string& mode, std::string inf
         // std::cout << "hw: " << mVisionHeight << ", " << mVisionWidth << std::endl;
         // std::cout << "file: " << file_info << std::endl;
     }
+#ifdef LLM_SUPPORT_HTTP_RESOURCE
     if (file_info.substr(0, 4) == "http") {
         std::regex url_regex(R"(^https?://([^/]+)(/.*))");
         std::smatch url_match_result;
@@ -731,6 +984,7 @@ std::vector<int> Omni::multimodeProcess(const std::string& mode, std::string inf
             std::cerr << "Failed to download file. Status code: " << (res ? res->status : 0) << std::endl;
         }
     }
+#endif
     if (mode == "img" && mConfig->is_visual()) {
         return visionProcess(file_info);
     }
@@ -835,14 +1089,49 @@ std::vector<int> Omni::processAudioContent(const std::string& content, const std
 }
 
 VARP Omni::embedding(const std::vector<int>& input_ids) {
+    MNN::Express::ExecutorScope s(mExecutor);
     if (input_ids.size() == 1) {
+        if (mConfig->has_deepstack() && mExtraArgs.size() == 1) {
+            mExtraArgs[0] = Express::_Fill(_var<int>({3, 1, 1}, {3}), _Scalar<float>(0.0));
+        }
         return Llm::embedding(input_ids);
     }
+    // Pre-compute PLE for full input_ids (gemma4)
+    // HF replaces image_token_id with pad_token_id(0) for PLE lookup
+    if (mPleEmbedding) {
+        int ple_dim = mConfig->ple_embed_dim();
+        float ple_scale = mConfig->ple_embed_scale();
+        int seq_len = static_cast<int>(input_ids.size());
+        // Replace vision/audio pad tokens with pad_token_id=0 for PLE
+        std::vector<int> ple_ids = input_ids;
+        for (auto& id : ple_ids) {
+            if (id == mVisionPad || id == mAudioPad) {
+                id = 0; // pad_token_id
+            }
+        }
+        mPleInput = _Input({1, seq_len, ple_dim}, NCHW);
+        mPleEmbedding->embedding(ple_ids, mPleInput->writeMap<float>());
+        if (ple_scale != 1.0f) {
+            mPleInput = mPleInput * _Scalar<float>(ple_scale);
+        }
+    }
     std::vector<VARP> embeddings;
+    std::vector<VARP> deepstacks;
     std::vector<int> position_ids;
     int vision_idx = 0, audio_idx = 0;
     std::vector<int> cur_txt_ids;
     bool inVision = false, inAudio = false;
+    bool hasDeepStack = !mDeepStackEmbeddings.empty();
+    std::vector<int> deepstackShape;
+    if (hasDeepStack) {
+        deepstackShape = mDeepStackEmbeddings[0]->getInfo()->dim; // N, seqlen, hddien_size
+    }
+    auto deepstacksTxt = [&]() {
+        if (hasDeepStack) {
+            deepstackShape[1] = cur_txt_ids.size();
+            deepstacks.push_back(Express::_Fill(_var<int>(deepstackShape, {static_cast<int>(deepstackShape.size())}), _Scalar<float>(0.0)));
+        }
+    };
     for (int i = 0; i < input_ids.size(); i++) {
         int id = input_ids[i];
         // audio
@@ -855,13 +1144,15 @@ VARP Omni::embedding(const std::vector<int>& input_ids) {
             }
         } else if (id == mAudioPad) {
             auto txt_embedding = Llm::embedding(cur_txt_ids);
+            if(txt_embedding == nullptr) {
+                return nullptr;
+            }
             auto mul_embedding = mAudioEmbeddings[audio_idx++];
             embeddings.push_back(txt_embedding);
             embeddings.push_back(mul_embedding);
             inAudio = true;
         }
         // vision
-#if 1
         if (inVision) {
             if (id == mVisionPad) {
                 continue;
@@ -871,37 +1162,46 @@ VARP Omni::embedding(const std::vector<int>& input_ids) {
             }
         } else if (id == mVisionPad) {
             auto txt_embedding = Llm::embedding(cur_txt_ids);
+            if(txt_embedding == nullptr) {
+                return nullptr;
+            }
+            if (hasDeepStack) {
+                deepstacksTxt();
+                auto deepstack_embedding = mDeepStackEmbeddings[vision_idx];
+                deepstacks.push_back(deepstack_embedding);
+            }
             auto mul_embedding = mVisionEmbeddings[vision_idx++];
             embeddings.push_back(txt_embedding);
             embeddings.push_back(mul_embedding);
             inVision = true;
         }
         cur_txt_ids.push_back(id);
-#else
-        if (id == mVisionPad) {
-            continue;
-        }
-        cur_txt_ids.push_back(id);
-        if (id == mVisionStart) {
-            auto txt_embedding = Llm::embedding(cur_txt_ids);
-            auto mul_embedding = mVisionEmbeddings[vision_idx++];
-            embeddings.push_back(txt_embedding);
-            embeddings.push_back(mul_embedding);
-        } else if (id == mVisionEnd) {
-            cur_txt_ids.clear();
-            cur_txt_ids.push_back(id);
-        }
-#endif
     }
-
-    mVisionEmbeddings.clear();
-    mAudioEmbeddings.clear();
     if (!cur_txt_ids.empty()) {
         auto txt_embedding = Llm::embedding(cur_txt_ids);
+        if(txt_embedding == nullptr) {
+            return nullptr;
+        }
         embeddings.push_back(txt_embedding);
+        deepstacksTxt();
     }
-    auto embedding = Express::_Concat(embeddings, 0);
-    return embedding;
+    auto mergedEmbed = Express::_Concat(embeddings, 0);
+    // Deep copy: materialize the lazy concat so vision data persists after clear
+    {
+        auto cInfo = mergedEmbed->getInfo();
+        auto cPtr = mergedEmbed->readMap<float>();
+        auto freshEmbed = _Input(cInfo->dim, cInfo->order);
+        ::memcpy(freshEmbed->writeMap<float>(), cPtr, cInfo->size * sizeof(float));
+        mergedEmbed = freshEmbed;
+    }
+    mVisionEmbeddings.clear();
+    mAudioEmbeddings.clear();
+    mDeepStackEmbeddings.clear();
+    // Qwen3-VL
+    if (hasDeepStack) {
+        mExtraArgs[0] = Express::_Concat(deepstacks, 1);
+    }
+    return mergedEmbed;
 }
 
 static inline bool needNewVar(VARP var, int axis, int seq_len) {
@@ -915,6 +1215,7 @@ static inline bool needNewVar(VARP var, int axis, int seq_len) {
 }
 
 VARP Omni::gen_position_ids(int seq_len) {
+    MNN::Express::ExecutorScope s(mExecutor);
     auto positionIdsDims = mModule->getInfo()->inputs[2].dim;
     if (positionIdsDims[0] == 1) {
         return Llm::gen_position_ids(seq_len);
@@ -934,9 +1235,12 @@ VARP Omni::gen_position_ids(int seq_len) {
         }
     } else {
         for (int i = 0; i < seq_len; i++) {
-            ptr[i] = mPositionIds.mT[i] + mContext->all_seq_len;
-            ptr[i + seq_len] = mPositionIds.mH[i] + mContext->all_seq_len;
-            ptr[i + seq_len * 2] = mPositionIds.mW[i] + mContext->all_seq_len;
+            int mT_val = i < mPositionIds.mT.size() ? mPositionIds.mT[i] : i;
+            int mH_val = i < mPositionIds.mH.size() ? mPositionIds.mH[i] : i;
+            int mW_val = i < mPositionIds.mW.size() ? mPositionIds.mW[i] : i;
+            ptr[i] = mT_val + mContext->all_seq_len;
+            ptr[i + seq_len] = mH_val + mContext->all_seq_len;
+            ptr[i + seq_len * 2] = mW_val + mContext->all_seq_len;
         }
         if (mTalker) {
             mTalker->setPostionIds(mPositionIds);
@@ -951,21 +1255,213 @@ VARP Omni::gen_position_ids(int seq_len) {
     return positionIds;
 }
 
-std::vector<Express::VARP> Omni::forwardRaw(Express::VARP hiddenState, Express::VARP mask, Express::VARP inputPos) {
-    auto outputs = Llm::forwardRaw(hiddenState, mask, inputPos);
+std::vector<Express::VARP> Omni::forwardRaw(Express::VARP hiddenState, Express::VARP mask, Express::VARP inputPos, Express::VARPS extraArgs) {
+    MNN::Express::ExecutorScope s(mExecutor);
+    extraArgs.insert(extraArgs.end(), mExtraArgs.begin(), mExtraArgs.end());
+    auto outputs = Llm::forwardRaw(hiddenState, mask, inputPos, extraArgs);
     if (mTalker && outputs.size() > 1) {
         mTalker->addTalkerEmbeds(outputs[1]);
     }
     return outputs;
 }
 
+void Omni::responseInterleaved(const std::vector<int>& input_ids, std::ostream* os, const char* end_with,
+                               int max_new_tokens) {
+    MNN::Express::ExecutorScope s(mExecutor);
+    MNN::Timer ttfa_timer;
+
+    if (max_new_tokens < 0) {
+        max_new_tokens = mConfig->max_new_tokens();
+    }
+
+    // ---- 1. Thinker Prefill ----
+    auto input_embeds = embedding(input_ids);
+    if (input_embeds == nullptr) {
+        return;
+    }
+    int seqLen = input_embeds->getInfo()->dim[mSeqLenIndex];
+    mContext->prompt_len = seqLen;
+    mContext->history_tokens.insert(mContext->history_tokens.end(), input_ids.begin(), input_ids.end());
+
+    MNN::Timer _t;
+    auto outputs = forwardVec(input_embeds);
+    if (outputs.empty()) {
+        mContext->status = LlmStatus::INTERNAL_ERROR;
+        return;
+    }
+    updateContext(seqLen, 0);
+    mContext->prefill_us += _t.durationInUs();
+
+    // Sample first thinker token from prefill logits
+    mContext->current_token = sample(outputs[0]);
+    mContext->history_tokens.push_back(mContext->current_token);
+    mContext->output_tokens.push_back(mContext->current_token);
+    updateContext(0, 1);
+
+    // Output first token
+    if (!is_stop(mContext->current_token)) {
+        auto decodeStr = tokenizer_decode(mContext->current_token);
+        mContext->generate_str += decodeStr;
+        if (nullptr != os) {
+            *os << decodeStr << std::flush;
+        }
+    }
+
+    // ---- 1.5 Run one Thinker decode step to populate mTalkerEmbeds[1] ----
+    // This is needed so stepPrefill() has the thinker's first decode hidden state
+    // (mTalkerEmbeds[1]) instead of mTextEos.
+    // Only run if the first token is NOT a stop token.
+    int thinker_tokens = 1;
+    if (!is_stop(mContext->current_token)) {
+        MNN::Timer t_decode;
+        auto decode_outputs = forwardVec({mContext->current_token});
+        if (decode_outputs.empty()) {
+            mContext->status = LlmStatus::INTERNAL_ERROR;
+            return;
+        }
+        updateContext(1, 0);
+
+        int next_token = sample(decode_outputs[0]);
+        mContext->current_token = next_token;
+        mContext->history_tokens.push_back(next_token);
+        mContext->output_tokens.push_back(next_token);
+        updateContext(0, 1);
+        mContext->decode_us += t_decode.durationInUs();
+        thinker_tokens = 2;
+
+        if (!is_stop(next_token)) {
+            auto decodeStr = tokenizer_decode(next_token);
+            mContext->generate_str += decodeStr;
+            if (nullptr != os) {
+                *os << decodeStr << std::flush;
+            }
+        }
+    }
+
+    // ---- 2. Talker Prefill ----
+    // Now mTalkerEmbeds has at least 2 thinker embed entries (from prefill + decode)
+    if (!mTalker->hasEmbeds()) {
+        MNN_ERROR("Talker embeds empty before prefill in interleaved mode\n");
+        mContext->status = LlmStatus::INTERNAL_ERROR;
+        return;
+    }
+    mTalker->stepPrefill();
+    mContext->ttfa_us = ttfa_timer.durationInUs();
+
+    // ---- 3. Interleaved Decode Loop ----
+    bool thinker_done = is_stop(mContext->current_token);
+    bool talker_done = !mTalker->doGenerate();
+    int talker_step = 2;
+    int64_t talker_decode_us = 0;
+
+    while (!thinker_done || !talker_done) {
+        if (mContext->status == LlmStatus::USER_CANCEL || mContext->status == LlmStatus::INTERNAL_ERROR) {
+            break;
+        }
+
+        // ---- Thinker Decode Step ----
+        if (!thinker_done && thinker_tokens < max_new_tokens) {
+            MNN::Timer t_decode;
+            auto decode_outputs = forwardVec({mContext->current_token});
+            if (decode_outputs.empty()) {
+                break;
+            }
+            updateContext(1, 0);
+
+            int next_token = sample(decode_outputs[0]);
+            mContext->current_token = next_token;
+            mContext->history_tokens.push_back(next_token);
+            mContext->output_tokens.push_back(next_token);
+            updateContext(0, 1);
+            mContext->decode_us += t_decode.durationInUs();
+            thinker_tokens++;
+
+            if (is_stop(next_token)) {
+                thinker_done = true;
+                if (nullptr != os) {
+                    *os << end_with << std::flush;
+                }
+            } else {
+                auto decodeStr = tokenizer_decode(next_token);
+                mContext->generate_str += decodeStr;
+                if (nullptr != os) {
+                    *os << decodeStr << std::flush;
+                }
+            }
+        } else if (!thinker_done) {
+            thinker_done = true;
+            if (nullptr != os) {
+                *os << end_with << std::flush;
+            }
+        }
+
+        // ---- Talker Decode Step ----
+        if (!talker_done) {
+            if (talker_step >= mTalker->maxNewTokens()) {
+                talker_done = true;
+            } else {
+                MNN::Timer t_talker;
+                mTalker->stepForward(talker_step++);
+                talker_decode_us += t_talker.durationInUs();
+
+                int talker_token = mTalker->getContext()->current_token;
+                if (talker_token == 8292 || talker_token == 8294) {
+                    talker_done = true;
+                }
+            }
+        }
+    }
+
+    // Accumulate talker decode time collected during interleaved loop
+    mTalker->mContext->decode_us += talker_decode_us;
+
+    // ---- 4. Final Talker flush ----
+    mTalker->finalize();
+
+    if (thinker_tokens >= max_new_tokens) {
+        mContext->status = LlmStatus::MAX_TOKENS_FINISHED;
+    }
+#ifdef DUMP_TALKER_PERFORMANCE
+    {
+        auto ctx = mTalker->getContext();
+        float ttfa_s = mContext->ttfa_us / 1e6;
+        float thinker_prefill_s = mContext->prefill_us / 1e6;
+        float thinker_decode_s = mContext->decode_us / 1e6;
+        float talker_prefill_s = ctx->prefill_us / 1e6;
+        float talker_decode_s = ctx->decode_us / 1e6;
+        float token2wav_s = ctx->audio_us / 1e6;
+        float audio_duration = ctx->gen_seq_len / 50.0;
+        printf("\n#################################\n");
+        printf(" [interleaved mode]\n");
+        printf("  thinker tokens num = %d\n", thinker_tokens);
+        printf("   talker tokens num = %d\n", ctx->gen_seq_len);
+        printf("    thinker prefill = %.2f s\n", thinker_prefill_s);
+        printf("     thinker decode = %.2f s\n", thinker_decode_s);
+        printf("     talker prefill = %.2f s\n", talker_prefill_s);
+        printf("      talker decode = %.2f s\n", talker_decode_s);
+        printf("       ttfa (total) = %.2f s\n", ttfa_s);
+        printf("      token2wav     = %.2f s\n", token2wav_s);
+        printf("       tts rtf      = %.2f \n", (talker_decode_s + token2wav_s) / audio_duration);
+        printf("##################################\n");
+    }
+#endif
+}
+
 void Omni::response(const std::vector<int>& input_ids, std::ostream* os, const char* end_with, int max_new_tokens) {
+    MNN::Express::ExecutorScope s(mExecutor);
     if (!end_with) { end_with = "\n"; }
     generate_init(os, end_with);
     if (mTalker) {
         mTalker->generate_init();
     }
-    generate(input_ids, max_new_tokens);
+    CHECK_LLM_RUNNING(mContext);
+    if (!mTalker || !mTalker->mInterleaved) {
+        MNN::Timer thinker_timer;
+        generate(input_ids, max_new_tokens);
+        mThinkerElapsedUs = thinker_timer.durationInUs();
+    } else {
+        responseInterleaved(input_ids, os, end_with, max_new_tokens);
+    }
 }
 
 void Omni::setWavformCallback(std::function<bool(const float*, size_t, bool)> callback) {
@@ -976,36 +1472,41 @@ void Omni::setWavformCallback(std::function<bool(const float*, size_t, bool)> ca
 
 void Omni::generateWavform() {
     if (mTalker) {
-        mTalker->generate();
+        if (!mTalker->mInterleaved) {
+            mTalker->generate();
 #ifdef DUMP_TALKER_PERFORMANCE
-        auto context = mTalker->getContext();
-        float prefill_s = context->prefill_us / 1e6;
-        float decode_s = context->decode_us / 1e6;
-        float token2wav_s = context->audio_us / 1e6;
-        float dit_s = context->vision_us / 1e6;
-        float tts_s = token2wav_s;
-        if (mTalker->mStreamWithDecode) {
-            tts_s += decode_s;
-        }
-        float audio_duration = context->gen_seq_len / 50.0;
-        printf("\n#################################\n");
-        printf("prompt tokens num = %d\n", context->prompt_len);
-        printf("decode tokens num = %d\n", context->gen_seq_len);
-        printf("  prefill time = %.2f s\n", prefill_s);
-        printf("   decode time = %.2f s\n", decode_s);
-        printf("      dit time = %.2f s\n", dit_s);
-        printf("token2wav time = %.2f s\n", token2wav_s);
-        printf("      tts time = %.2f s\n", tts_s);
-        printf("  prefill speed = %.2f tok/s\n", context->prompt_len / prefill_s);
-        printf("   decode speed = %.2f tok/s\n", context->gen_seq_len / decode_s);
-        printf("token2wav speed = %.2f tok/s\n", context->gen_seq_len / token2wav_s);
-        printf("      tts rtf   = %.2f \n", tts_s / audio_duration);
-        printf("##################################\n");
+            auto context = mTalker->getContext();
+            float prefill_s = context->prefill_us / 1e6;
+            float decode_s = context->decode_us / 1e6;
+            float ttfa_s = (mThinkerElapsedUs + context->ttfa_us) / 1e6;
+            float token2wav_s = context->audio_us / 1e6;
+            float dit_s = context->vision_us / 1e6;
+            float tts_s = token2wav_s;
+            if (mTalker->mStreamWithDecode) {
+                tts_s += decode_s;
+            }
+            float audio_duration = context->gen_seq_len / 50.0;
+            printf("\n#################################\n");
+            printf("prompt tokens num = %d\n", context->prompt_len);
+            printf("decode tokens num = %d\n", context->gen_seq_len);
+            printf("  prefill time = %.2f s\n", prefill_s);
+            printf("   decode time = %.2f s\n", decode_s);
+            printf("      ttfa time = %.2f s\n", ttfa_s);
+            printf("      dit time = %.2f s\n", dit_s);
+            printf("token2wav time = %.2f s\n", token2wav_s);
+            printf("      tts time = %.2f s\n", tts_s);
+            printf("  prefill speed = %.2f tok/s\n", context->prompt_len / prefill_s);
+            printf("   decode speed = %.2f tok/s\n", context->gen_seq_len / decode_s);
+            printf("token2wav speed = %.2f tok/s\n", context->gen_seq_len / token2wav_s);
+            printf("      tts rtf   = %.2f \n", tts_s / audio_duration);
+            printf("##################################\n");
 #endif
+        }
     }
 }
 
 bool Talker::load() {
+    MNN::Express::ExecutorScope s(mExecutor);
     initRuntime();
     mSeqLenIndex = 1;
     set_config("{\"sampler_type\": \"mixed\", \"temperature\": 0.9, \"topK\": 40, \"topP\": 0.8, \"penalty\": 1.05}");
@@ -1013,6 +1514,7 @@ bool Talker::load() {
     mDiskEmbedding.reset(new DiskEmbedding(mConfig, mConfig->talker_embedding_file()));
     // some embeddings
     mMaxNewTokens = mConfig->talker_max_new_tokens();
+    mInterleaved = mConfig->interleaved();
     std::string speaker = mConfig->talker_speaker();
     auto spk_dict = Express::Variable::loadMap(mConfig->spk_dict().c_str());
     mSpk = spk_dict[speaker + "_spk"];
@@ -1034,14 +1536,15 @@ bool Talker::load() {
     if (mModule.get() == nullptr) {
         return false;
     }
+    auto module_runtime = mProcessorRuntimeManager ? mProcessorRuntimeManager : mRuntimeManager;
     // dit
     mPreDit.reset(Module::load({"cond", "spk", "code"}, {"code_embeds", "rope", "mask"},
-                                mConfig->predit_model().c_str(), mRuntimeManager, &module_config));
+                                mConfig->predit_model().c_str(), module_runtime, &module_config));
     mDit.reset(Module::load({"x", "code_embeds", "rope", "mask", "time"}, {"mel"},
-                            mConfig->dit_model().c_str(), mRuntimeManager, &module_config));
+                            mConfig->dit_model().c_str(), module_runtime, &module_config));
     // bigvgan
     mBigvgan.reset(Module::load({"generated_mel"},
-                                {"waveform"}, mConfig->bigvgan_model().c_str(), mRuntimeManager, &module_config));
+                                {"waveform"}, mConfig->bigvgan_model().c_str(), module_runtime, &module_config));
     // autoregressive decode module
     mModulePool[std::make_pair(1, false)].reset(Module::clone(mModule.get()));
     // prefill module
@@ -1049,7 +1552,20 @@ bool Talker::load() {
     if (mBigvgan.get() == nullptr || mPreDit.get() == nullptr || mDit.get() == nullptr) {
         return false;
     }
+    mAsyncToken2Wav = (module_runtime.get() != mRuntimeManager.get());
+    
+    if (mAsyncToken2Wav && doGenerate()) {
+        startAsyncWorker();
+    }
+    
+    mContext->status = LlmStatus::RUNNING;  // Set status to RUNNING after successful load
     return true;
+}
+
+Talker::~Talker() {
+    if (mWavWorkerRunning) {
+        stopAsyncWorker();
+    }
 }
 
 void Talker::generate_init(std::ostream* os, const char* end_with) {
@@ -1071,6 +1587,15 @@ void Talker::generate_init(std::ostream* os, const char* end_with) {
     dit_start_index = 0;
     dit_left_padding = 0;
     vocoder_left_pad = 0;
+    mWavLastDone.store(false);
+    {
+        std::lock_guard<std::mutex> lock(mWavQueueMutex);
+        std::queue<WavChunk>().swap(mWavQueue);
+    }
+    {
+        std::lock_guard<std::mutex> lock(mMelQueueMutex);
+        std::queue<WavChunk>().swap(mMelQueue);
+    }
 }
 
 Express::VARP Talker::embedding(const std::vector<int>& input_ids) {
@@ -1078,6 +1603,7 @@ Express::VARP Talker::embedding(const std::vector<int>& input_ids) {
 }
 
 Express::VARP Talker::gen_position_ids(int seq_len) {
+    MNN::Express::ExecutorScope s(mExecutor);
     // mrope
     if (needNewVar(positionIds, 2, seq_len)) {
         positionIds = _Input({3, 1, seq_len}, NCHW, halide_type_of<int>());
@@ -1097,11 +1623,16 @@ Express::VARP Talker::gen_position_ids(int seq_len) {
     return positionIds;
 }
 
+void Talker::setProcessorRuntimeManager(std::shared_ptr<Executor::RuntimeManager> processorRuntimeManager) {
+    mProcessorRuntimeManager = processorRuntimeManager;
+}
+
 void Talker::setWavformCallback(const std::function<bool(const float*, size_t, bool)> callback) {
     mWavformCallback = callback;
 }
 
 VARP Talker::ditForward(const int codec_size, const int* codec_tokens, const float* initial_noise) {
+    MNN::Express::ExecutorScope s(mExecutor);
     auto code = _Const(codec_tokens, {1, codec_size}, NCHW, halide_type_of<int>());
     const int max_duration = codec_size * 2;
     auto outputs = mPreDit->onForward({mCond, mSpk, code});
@@ -1155,11 +1686,13 @@ VARP Talker::ditForward(const int codec_size, const int* codec_tokens, const flo
 }
 
 VARP Talker::bigvganForward(VARP mel) {
+    MNN::Express::ExecutorScope s(mExecutor);
     auto waveform = mBigvgan->forward(mel);
     return waveform;
 }
 
 void Talker::token2wav(bool talker_done) {
+    MNN::Express::ExecutorScope s(mExecutor);
     int codec_size = mContext->gen_seq_len - dit_start_index;
     int chunk_size = dit_left_padding + dit_chunk_size + dit_right_padding;
     bool last_chunk = talker_done && (codec_size <= chunk_size);
@@ -1200,24 +1733,285 @@ void Talker::token2wav(bool talker_done) {
 }
 
 VARP Talker::token2wav(const std::vector<int>& codec_tokens) {
+    MNN::Express::ExecutorScope s(mExecutor);
     auto generated_mel = ditForward(codec_tokens.size(), codec_tokens.data());
     auto waveform = bigvganForward(generated_mel);
     return waveform;
 }
 
+void Talker::startAsyncWorker() {
+    if (mWavWorkerRunning.exchange(true)) return; // already running
+    mDitWorkerThread = std::thread(&Talker::ditWorkerLoop, this);
+    mVocoderWorkerThread = std::thread(&Talker::vocoderWorkerLoop, this);
+}
+
+void Talker::stopAsyncWorker() {
+    mWavWorkerRunning.store(false);
+    mWavQueueCond.notify_all();
+    mMelQueueCond.notify_all();
+    if (mDitWorkerThread.joinable()) {
+        mDitWorkerThread.join();
+    }
+    if (mVocoderWorkerThread.joinable()) {
+        mVocoderWorkerThread.join();
+    }
+}
+
+void Talker::ditWorkerLoop() {
+    BackendConfig backendConfig;
+    auto forwardType = backend_type_convert(mConfig->backend_type(true));
+    int numThread = mConfig->thread_num(true);
+    auto executor = Express::Executor::newExecutor(forwardType, backendConfig, numThread);
+    Express::ExecutorScope scope(executor);
+    mPreDit_async.reset(Module::clone(mPreDit.get()));
+    mDit_async.reset(Module::clone(mDit.get()));
+    mSpk_async = _Clone(mSpk, true);
+    mCond_async = _Clone(mCond, true);
+
+    while (true) {
+        WavChunk chunk;
+        {
+            std::unique_lock<std::mutex> lock(mWavQueueMutex);
+            mWavQueueCond.wait(lock, [this] {
+                return !mWavQueue.empty() || !mWavWorkerRunning;
+            });
+            
+            if (!mWavWorkerRunning && mWavQueue.empty()) {
+                break;
+            }
+            
+            if (mWavQueue.empty()) {
+                continue;
+            }
+            
+            chunk = std::move(mWavQueue.front());
+            mWavQueue.pop();
+        }
+
+        if (!chunk.codec_tokens.empty()) {
+            auto generated_mel = ditForwardAsync((int)chunk.codec_tokens.size(),
+                chunk.codec_tokens.data(), chunk.noise.data());
+            generated_mel = _Slice(generated_mel,
+                _var<int>({0, 0, chunk.mel_slice_start}, {3}),
+                _var<int>({-1, -1, chunk.mel_slice_size}, {3}));
+            auto mel_info = generated_mel->getInfo();
+            chunk.mel_dims = mel_info->dim;
+            chunk.mel.assign(generated_mel->readMap<float>(),
+                             generated_mel->readMap<float>() + mel_info->size);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mMelQueueMutex);
+            mMelQueue.push(std::move(chunk));
+        }
+        mMelQueueCond.notify_one();
+    }
+
+    {
+        WavChunk sentinel;
+        sentinel.is_last = true;
+        std::lock_guard<std::mutex> lock(mMelQueueMutex);
+        mMelQueue.push(std::move(sentinel));
+    }
+    mMelQueueCond.notify_one();
+
+    mPreDit_async.reset();
+    mDit_async.reset();
+    mSpk_async = nullptr;
+    mCond_async = nullptr;
+}
+
+void Talker::vocoderWorkerLoop() {
+    BackendConfig backendConfig;
+    auto forwardType = backend_type_convert(mConfig->backend_type(true));
+    int numThread = mConfig->thread_num(true);
+    auto executor = Express::Executor::newExecutor(forwardType, backendConfig, numThread);
+    Express::ExecutorScope scope(executor);
+    mBigvgan_async.reset(Module::clone(mBigvgan.get()));
+
+    while (true) {
+        WavChunk chunk;
+        {
+            std::unique_lock<std::mutex> lock(mMelQueueMutex);
+            mMelQueueCond.wait(lock, [this] {
+                return !mMelQueue.empty() || !mWavWorkerRunning;
+            });
+            if (!mWavWorkerRunning && mMelQueue.empty()) {
+                break;
+            }
+            if (mMelQueue.empty()) {
+                continue;
+            }
+            chunk = std::move(mMelQueue.front());
+            mMelQueue.pop();
+        }
+
+        processWavChunk(chunk);
+
+        if (chunk.is_last) {
+            mWavLastDone.store(true);
+            mWavQueueCond.notify_all();
+        }
+    }
+
+    mBigvgan_async.reset();
+}
+
+VARP Talker::ditForwardAsync(const int codec_size, const int* codec_tokens, const float* initial_noise) {
+    auto code = _Const(codec_tokens, {1, codec_size}, NCHW, halide_type_of<int>());
+    const int max_duration = codec_size * 2;
+    auto outputs = mPreDit_async->onForward({mCond_async, mSpk_async, code});
+    auto code_embeds = outputs[0];
+    auto rope = outputs[1];
+    auto mask = outputs[2];
+    const int steps = mConfig->dit_steps();
+    const int solver = mConfig->dit_solver();
+    const float step_ratio = 1.0 / (steps - 1);
+    auto forward_dit = [&](float t, Express::VARP x) {
+        return mDit_async->onForward({x, code_embeds, rope, mask, _Const(t, {1}, NCHW)})[0];
+    };
+    auto y0 = _Input({1, max_duration, 80}, NCHW, halide_type_of<float>());
+    if (initial_noise) {
+        for (int i = 0; i < max_duration * 80; ++i) {
+            y0->writeMap<float>()[i] = initial_noise[i];
+        }
+    } else {
+        std::random_device rd;
+        std::mt19937 generator(rd());
+        std::normal_distribution<double> distribution(0.0, 1.0);
+        for (int i = 0; i < max_duration * 80; ++i) {
+            y0->writeMap<float>()[i] = distribution(generator);
+        }
+    }
+    for (int i = 0; i < steps - 1; i++) {
+        float t0 = 1 - std::cos(M_PI / 2 * i * step_ratio);
+        float t1 = 1 - std::cos(M_PI / 2 * (i + 1) * step_ratio);
+        float dt = t1 - t0;
+        auto k1 = mDit_async->onForward({y0, code_embeds, rope, mask, _Const(t0, {1}, NCHW)})[0];
+        if (solver == 1) {
+            y0 = y0 + k1 * _Scalar<float>(dt);
+        } else {
+            constexpr float one_third = 1.0 / 3.0;
+            constexpr float two_third = 2.0 / 3.0;
+            auto kk1 = _Clone(k1, true);
+            auto k2 = forward_dit(t0 + dt * one_third, y0 + k1 * _Scalar<float>(dt * one_third));
+            auto kk2 = _Clone(k2, true);
+            auto k3 = forward_dit(t0 + dt * two_third, y0 + _Scalar<float>(dt) * (k2 - k1 * _Scalar<float>(two_third)));
+            auto kk3 = _Clone(k3, true);
+            auto k4 = forward_dit(t1, y0 + _Scalar<float>(dt) * (k1 - k2 + k3));
+            auto kk4 = _Clone(k4, true);
+            auto dy = (kk1 + _Scalar<float>(3.0) * (kk2 + kk3) + kk4) * _Scalar<float>(dt * 0.125);
+            y0 = y0 + dy;
+        }
+    }
+    return _Permute(y0, {0, 2, 1});
+}
+
+VARP Talker::bigvganForwardAsync(VARP mel) {
+    return mBigvgan_async->forward(mel);
+}
+
+void Talker::processWavChunk(WavChunk& chunk) {
+    if (chunk.mel.empty() || chunk.mel_dims.empty()) {
+        if (chunk.is_last && mWavformCallback) {
+            mWavformCallback(nullptr, 0, true);
+        }
+        return;
+    }
+    MNN::Timer _t;
+    auto generated_mel = _Const(chunk.mel.data(), chunk.mel_dims, NCHW, halide_type_of<float>());
+    mMelBuffer = (mMelBuffer == nullptr) ?
+        generated_mel : _Concat({mMelBuffer, generated_mel}, -1);
+
+    auto generated_waveform = bigvganForwardAsync(mMelBuffer);
+
+    auto ptr = generated_waveform->readMap<float>()
+        + vocoder_left_pad * vocoder_upsample_rate;
+    auto size = generated_waveform->getInfo()->size
+        - (vocoder_left_pad + vocoder_right_pad) * vocoder_upsample_rate;
+    mWaveformBuffer.insert(mWaveformBuffer.end(), ptr, ptr + size);
+    vocoder_left_pad = vocoder_left_context;
+    mMelBuffer = _Slice(mMelBuffer,
+        _var<int>({0, 0, -vocoder_left_pad - vocoder_right_pad}, {3}),
+        _var<int>({-1, -1, -1}, {3}));
+    mContext->audio_us += _t.durationInUs();
+    if (mWavformCallback) {
+        mWavformCallback(ptr, size, chunk.is_last);
+    }
+}
+
+void Talker::trySubmitChunkAsync(bool talker_done) {
+    while (true) {
+        int codec_size = mContext->gen_seq_len - dit_start_index;
+        int chunk_size = dit_left_padding + dit_chunk_size + dit_right_padding;
+        bool last_chunk = talker_done && (codec_size <= chunk_size);
+
+        if (!last_chunk && codec_size < chunk_size) {
+            return;
+        }
+        if (codec_size <= 0) {
+            if (talker_done) {
+                WavChunk wav_chunk;
+                wav_chunk.is_last = true;
+                {
+                    std::lock_guard<std::mutex> lock(mWavQueueMutex);
+                    mWavQueue.push(std::move(wav_chunk));
+                }
+                mWavQueueCond.notify_one();
+            }
+            return;
+        }
+
+        int real_size = last_chunk ? codec_size : chunk_size;
+
+        WavChunk wav_chunk;
+        wav_chunk.codec_tokens.assign(
+            mContext->output_tokens.begin() + dit_start_index,
+            mContext->output_tokens.begin() + dit_start_index + real_size);
+        int noise_start = dit_start_index * 160;
+        wav_chunk.noise.assign(
+            mInitialNoise.begin() + noise_start,
+            mInitialNoise.begin() + noise_start + real_size * 160);
+        wav_chunk.mel_slice_start = dit_left_padding * 2;
+        wav_chunk.mel_slice_size = last_chunk ? -1 : dit_chunk_size * 2;
+        wav_chunk.is_last = last_chunk;
+
+        dit_left_padding = dit_left_context;
+        dit_start_index += (chunk_size - dit_left_padding - dit_right_padding);
+
+        {
+            std::lock_guard<std::mutex> lock(mWavQueueMutex);
+            mWavQueue.push(std::move(wav_chunk));
+        }
+        mWavQueueCond.notify_one();
+
+        if (last_chunk) {
+            return;
+        }
+    }
+}
+
 int Talker::sample(Express::VARP logits, int offset, int size) {
+    MNN::Express::ExecutorScope s(mExecutor);
     int token = Llm::sample(logits, offset, size);
-    if (mStreamWithDecode) {
+    if (mAsyncToken2Wav) {
+        if (!mWavWorkerRunning) {
+            startAsyncWorker();
+        }
+        trySubmitChunkAsync(false);
+    } else if (mStreamWithDecode) {
         token2wav();
     }
     return token;
 }
 
-void Talker::generate() {
+void Talker::stepPrefill() {
+    CHECK_LLM_RUNNING(mContext);
+    MNN::Express::ExecutorScope s(mExecutor);
     if (!doGenerate()) { return; }
+
     mTalkerEmbeds.push_back(mTextEos);
     auto input_embeds = _Concat({mTalkerEmbeds[0], mTextBos + mCodecPad, mTalkerEmbeds[1] + mCodecBos}, 1);
-    // push 2 token ids
     mPositionIds.push_back();
     mPositionIds.push_back();
     mContext->prompt_len = input_embeds->getInfo()->dim[1];
@@ -1227,26 +2021,84 @@ void Talker::generate() {
     mContext->history_tokens.push_back(mContext->current_token);
     mContext->output_tokens.push_back(mContext->current_token);
     mContext->prefill_us += _t.durationInUs();
-    _t.reset();
-    for (int i = 1; i < mMaxNewTokens; i++) {
-        input_embeds = embedding({mContext->current_token});
-        if (i + 1 < mTalkerEmbeds.size()) {
-            input_embeds = input_embeds + mTalkerEmbeds[i + 1];
-        } else {
-            mTalkerEmbeds.clear();
-            input_embeds = input_embeds + mTextPad;
-        }
-        auto logits = forward(input_embeds);
-        mContext->current_token = sample(logits);
-        mContext->history_tokens.push_back(mContext->current_token);
-        mContext->output_tokens.push_back(mContext->current_token);
+}
 
-        if (mContext->current_token == 8292 || mContext->current_token == 8294) {
+void Talker::stepForward(int stepIdx) {
+    CHECK_LLM_RUNNING(mContext);
+    MNN::Express::ExecutorScope s(mExecutor);
+    if (!doGenerate()) {
+        return;
+    }
+
+    auto input_embeds = embedding({mContext->current_token});
+    if (stepIdx + 1 < mTalkerEmbeds.size()) {
+        input_embeds = input_embeds + mTalkerEmbeds[stepIdx + 1];
+    } else {
+        mTalkerEmbeds.clear();
+        input_embeds = input_embeds + mTextPad;
+    }
+
+    auto logits = forward(input_embeds);
+    int token = sample(logits);
+
+    mContext->current_token = token;
+    mContext->history_tokens.push_back(token);
+    mContext->output_tokens.push_back(token);
+
+    if (mAsyncToken2Wav) {
+        trySubmitChunkAsync(false);
+    }
+}
+
+void Talker::finalize() {
+    CHECK_LLM_RUNNING(mContext);
+    MNN::Express::ExecutorScope s(mExecutor);
+    if (!doGenerate()) {
+        return;
+    }
+
+    if (mAsyncToken2Wav) {
+        trySubmitChunkAsync(true);
+        std::unique_lock<std::mutex> lock(mWavQueueMutex);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (!mWavLastDone.load()) {
+            if (!mWavQueueCond.wait_until(lock, deadline, [this] { return mWavLastDone.load(); })) {
+                MNN_ERROR("Talker async worker timeout; audio may be incomplete\n");
+                break;
+            }
+        }
+    } else {
+        token2wav(true);
+    }
+}
+
+void Talker::generate() {
+    CHECK_LLM_RUNNING(mContext);
+    MNN::Express::ExecutorScope s(mExecutor);
+    if (!doGenerate()) {
+        return;
+    }
+
+    MNN::Timer ttfa_timer;
+    stepPrefill();
+    mContext->ttfa_us = ttfa_timer.durationInUs();
+
+    if (mAsyncToken2Wav && !mWavWorkerRunning) {
+        startAsyncWorker();
+    }
+
+    MNN::Timer _t;
+    for (int i = 1; i < mMaxNewTokens; i++) {
+        stepForward(i);
+
+        int token = mContext->current_token;
+        if (token == 8292 || token == 8294) {
             break;
         }
     }
     mContext->decode_us += _t.durationInUs();
-    token2wav(true);
+
+    finalize();
 }
 
 void Talker::setPostionIds(const MropeInfo& positionIds) {

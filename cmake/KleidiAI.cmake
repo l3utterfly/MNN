@@ -73,8 +73,15 @@ function (download_kleidiai_and_collect_sources)
             CACHE PATH "Path to KleidiAI source (downloaded or provided)" FORCE)
     endif()
 
-    list(APPEND MNN_SOURCES_KLEIDIAI ${CMAKE_CURRENT_LIST_DIR}/mnn_kleidiai.cpp)
-    list(APPEND MNN_SOURCES_KLEIDIAI ${CMAKE_CURRENT_LIST_DIR}/mnn_kleidiai_util.cpp)
+    set(MNN_KLEIDIAI_DIR "${CMAKE_SOURCE_DIR}/source/backend/cpu/kleidiai")
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/mnn_kleidiai.cpp)
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/mnn_kleidiai_util.cpp)
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/KleidiAIConvolution.cpp)
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/KleidiAIConvolutionDepthwise.cpp)
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/KleidiAIConvInt8.cpp)
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/KleidiAIDenseConvolution.cpp)
+
+    include_directories(${MNN_KLEIDIAI_DIR})
 
     include_directories(
         ${KLEIDIAI_SRC_DIR}/
@@ -90,7 +97,9 @@ function (download_kleidiai_and_collect_sources)
         ${KLEIDIAI_SRC_DIR}/kai/ukernels/matmul/matmul_clamp_f16_f16p_f16p/
         ${KLEIDIAI_SRC_DIR}/kai/ukernels/matmul/matmul_clamp_f16_f16_f16p/
         ${KLEIDIAI_SRC_DIR}/kai/ukernels/matmul/imatmul_clamp_f32_f32p_f32p/
-        ${KLEIDIAI_SRC_DIR}/kai/ukernels/matmul/imatmul_clamp_f16_f16p_f16p/)
+        ${KLEIDIAI_SRC_DIR}/kai/ukernels/matmul/imatmul_clamp_f16_f16p_f16p/
+        ${KLEIDIAI_SRC_DIR}/kai/ukernels/dwconv/pack/
+        ${KLEIDIAI_SRC_DIR}/kai/ukernels/dwconv/dwconv_f32_f32_f32p/)
 
     file(GLOB kleidiai_pack_sources
         "${KLEIDIAI_SRC_DIR}/kai/ukernels/matmul/pack/kai_lhs_quant_pack_qsi8d32pscalef32_f16_neon.c"
@@ -196,6 +205,17 @@ function (download_kleidiai_and_collect_sources)
     )
     list(APPEND KLEIDIAI_FILES_SME2 ${matmul_clamp_f32_qsi8d32p_qai4c32p_sme2_sources})
 
+    file(GLOB dwconv_pack_sources
+        "${KLEIDIAI_SRC_DIR}/kai/ukernels/dwconv/pack/*.c"
+    )
+    list(APPEND KLEIDIAI_FILES_SME2 ${dwconv_pack_sources})
+
+    file(GLOB dwconv_f32_f32_f32p_sme2_sources
+        "${KLEIDIAI_SRC_DIR}/kai/ukernels/dwconv/dwconv_f32_f32_f32p/*.c"
+        "${KLEIDIAI_SRC_DIR}/kai/ukernels/dwconv/dwconv_f32_f32_f32p/*.S"
+    )
+    list(APPEND KLEIDIAI_FILES_SME2 ${dwconv_f32_f32_f32p_sme2_sources})
+
     set_source_files_properties(
         ${MNN_SOURCES_KLEIDIAI}
         PROPERTIES COMPILE_OPTIONS
@@ -208,6 +228,8 @@ function (download_kleidiai_and_collect_sources)
     set(MNN_SOURCES_KLEIDIAI "${MNN_SOURCES_KLEIDIAI}" PARENT_SCOPE)
     set(KLEIDIAI_FILES_SME2 "${KLEIDIAI_FILES_SME2}" PARENT_SCOPE)
 
-    # Define macro to indicate KleidiAI is enabled
-    add_definitions(-DMNN_KLEIDIAI_ENABLED=1)
+    # Define macro to indicate KleidiAI is enabled (only on aarch64)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)")
+        add_definitions(-DMNN_KLEIDIAI_ENABLED=1)
+    endif()
 endfunction()

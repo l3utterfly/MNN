@@ -38,8 +38,8 @@ static PyObject* PyMNNLLM_str(PyObject *self) {
 }
 
 static PyObject* PyMNNLLM_load(LLM *self, PyObject *args) {
-    self->llm->load();
-    Py_RETURN_NONE;
+    bool res = self->llm->load();
+    return toPyObj(res);
 }
 
 static PyObject* PyMNNLLM_forward(LLM *self, PyObject *args) {
@@ -155,10 +155,7 @@ MNN::Transformer::ChatMessages parse_chat_messages(PyObject* messages_obj) {
                 PyObject* role_obj = PyDict_GetItemString(message_obj, "role");
                 PyObject* content_obj = PyDict_GetItemString(message_obj, "content");
                 if (role_obj && content_obj) {
-                    MNN::Transformer::ChatMessage chat_message;
-                    chat_message.first = object2String(role_obj);
-                    chat_message.second = object2String(content_obj);
-                    chat_messages.push_back(chat_message);
+                    chat_messages.push_back({object2String(role_obj), object2String(content_obj)});
                 }
             }
         }
@@ -174,7 +171,7 @@ static PyObject* PyMNNLLM_response(LLM *self, PyObject *args) {
 
     PyObject* content = nullptr;
     int stream = 0;
-    int max_new_tokens = 2048;
+    int max_new_tokens = -1;
 
     if (!PyArg_ParseTuple(args, "O|ii", &content, &stream, &max_new_tokens)) {
         MNN_PRINT("[MNNLLM] response: PyArg_ParseTuple failed\n");
@@ -368,6 +365,9 @@ static PyObject* PyMNNLLM_get_context(LLM *self, PyObject *args) {
 
     PyDict_SetItemString(dict, "generate_str", string2Object(context->generate_str));
 
+    // llm status
+    PyDict_SetItemString(dict, "status", PyLong_FromLong((int)context->status));
+
     return dict;
 }
 
@@ -427,6 +427,11 @@ static PyObject* PyMNNLLM_set_context(LLM *self, PyObject *args) {
     PyObject* generate_str = PyDict_GetItemString(dict, "generate_str");
     if (generate_str && PyUnicode_Check(generate_str)) {
         context->generate_str = object2String(generate_str);
+    }
+
+    PyObject* status = PyDict_GetItemString(dict, "status");
+    if (status && PyLong_Check(status)) {
+        context->status = (MNN::Transformer::LlmStatus)PyLong_AsLong(status);
     }
 
     Py_RETURN_NONE;

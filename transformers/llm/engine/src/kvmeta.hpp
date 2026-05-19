@@ -5,26 +5,18 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#ifndef KVMATE_hpp
-#define KVMATE_hpp
+#ifndef KVMETA_hpp
+#define KVMETA_hpp
 
-#include <vector>
+// Unified KVMeta definition is in source/core/KVMeta.hpp
+#include "core/KVMeta.hpp"
 
+// Import MNN::KVMeta into MNN::Transformer namespace for backward compatibility
 namespace MNN {
 using namespace Express;
 namespace Transformer {
-
-struct KVMeta {
-    size_t block = 4096;
-    size_t previous = 0;
-    size_t remove = 0;
-    int* reserve = nullptr;
-    int n_reserve = 0;
-    size_t add = 0;
-    std::vector<int> reserveHost;
-    void sync();
-};
-
+    using MNN::KVMeta;
 }
 }
-#endif // KVMATE_hpp
+
+#endif // KVMETA_hpp

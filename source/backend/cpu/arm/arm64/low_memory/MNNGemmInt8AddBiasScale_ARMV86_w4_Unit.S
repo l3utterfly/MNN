@@ -90,7 +90,7 @@ sub \rg0, \rg0, \rg1, LSL #5 // revert weight kernel sum
 .endm
 
 asm_function MNNGemmInt8AddBiasScale_ARMV86_w4_Unit
-/* 
+/*
 struct QuanPostTreatParameters {
     const float* scale;
     const float* biasFloat;
@@ -180,12 +180,12 @@ LoopSz_TILE_10:
     .inst 0x4e89a46d // smmla v13.4s, v3.16b, v9.16b // tile0-oc2, tile0-oc3, tile1-oc2, tile1-oc3
     .inst 0x4e8aa46e // smmla v14.4s, v3.16b, v10.16b // tile0-oc4, tile0-oc5, tile1-oc4, tile1-oc5
     .inst 0x4e8ba46f // smmla v15.4s, v3.16b, v11.16b // tile0-oc6, tile0-oc7, tile1-oc6, tile1-oc7
-    
+
     .inst 0x4e88a490 // smmla v16.4s, v4.16b, v8.16b // tile2-oc0, tile2-oc1, tile3-oc0, tile3-oc1
     .inst 0x4e89a491 // smmla v17.4s, v4.16b, v9.16b // tile2-oc2, tile2-oc3, tile3-oc2, tile3-oc3
     .inst 0x4e8aa492 // smmla v18.4s, v4.16b, v10.16b // tile2-oc4, tile2-oc5, tile3-oc4, tile3-oc5
     .inst 0x4e8ba493 // smmla v19.4s, v4.16b, v11.16b // tile2-oc6, tile2-oc7, tile3-oc6, tile3-oc7
-    
+
     .inst 0x4e88a4b4 // smmla v20.4s, v5.16b, v8.16b // tile4-oc0, tile4-oc1, tile5-oc0, tile5-oc1
     .inst 0x4e89a4b5 // smmla v21.4s, v5.16b, v9.16b // tile4-oc2, tile4-oc3, tile5-oc2, tile5-oc3
     .inst 0x4e8aa4b6 // smmla v22.4s, v5.16b, v10.16b // tile4-oc4, tile4-oc5, tile5-oc4, tile5-oc5
@@ -396,10 +396,10 @@ L4_LoopSz_TILE_10:
     subs x13, x13, #1
     .inst 0x4e88a46c // smmla v12.4s, v3.16b, v8.16b // tile0-oc0, tile0-oc1, tile1-oc0, tile1-oc1
     .inst 0x4e89a46d // smmla v13.4s, v3.16b, v9.16b // tile0-oc2, tile0-oc3, tile1-oc2, tile1-oc3
-    
+
     .inst 0x4e88a490 // smmla v16.4s, v4.16b, v8.16b // tile2-oc0, tile2-oc1, tile3-oc0, tile3-oc1
     .inst 0x4e89a491 // smmla v17.4s, v4.16b, v9.16b // tile2-oc2, tile2-oc3, tile3-oc2, tile3-oc3
-    
+
     .inst 0x4e88a4b4 // smmla v20.4s, v5.16b, v8.16b // tile4-oc0, tile4-oc1, tile5-oc0, tile5-oc1
     .inst 0x4e89a4b5 // smmla v21.4s, v5.16b, v9.16b // tile4-oc2, tile4-oc3, tile5-oc2, tile5-oc3
 
@@ -566,12 +566,12 @@ LoopSz_TILE_8:
     .inst 0x4e89a46d // smmla v13.4s, v3.16b, v9.16b // tile0-oc2, tile0-oc3, tile1-oc2, tile1-oc3
     .inst 0x4e8aa46e // smmla v14.4s, v3.16b, v10.16b // tile0-oc4, tile0-oc5, tile1-oc4, tile1-oc5
     .inst 0x4e8ba46f // smmla v15.4s, v3.16b, v11.16b // tile0-oc6, tile0-oc7, tile1-oc6, tile1-oc7
-    
+
     .inst 0x4e88a490 // smmla v16.4s, v4.16b, v8.16b // tile2-oc0, tile2-oc1, tile3-oc0, tile3-oc1
     .inst 0x4e89a491 // smmla v17.4s, v4.16b, v9.16b // tile2-oc2, tile2-oc3, tile3-oc2, tile3-oc3
     .inst 0x4e8aa492 // smmla v18.4s, v4.16b, v10.16b // tile2-oc4, tile2-oc5, tile3-oc4, tile3-oc5
     .inst 0x4e8ba493 // smmla v19.4s, v4.16b, v11.16b // tile2-oc6, tile2-oc7, tile3-oc6, tile3-oc7
-    
+
     .inst 0x4e88a4b4 // smmla v20.4s, v5.16b, v8.16b // tile4-oc0, tile4-oc1, tile5-oc0, tile5-oc1
     .inst 0x4e89a4b5 // smmla v21.4s, v5.16b, v9.16b // tile4-oc2, tile4-oc3, tile5-oc2, tile5-oc3
     .inst 0x4e8aa4b6 // smmla v22.4s, v5.16b, v10.16b // tile4-oc4, tile4-oc5, tile5-oc4, tile5-oc5
@@ -737,10 +737,10 @@ L4_LoopSz_TILE_8:
     subs x13, x13, #1
     .inst 0x4e88a46c // smmla v12.4s, v3.16b, v8.16b // tile0-oc0, tile0-oc1, tile1-oc0, tile1-oc1
     .inst 0x4e89a46d // smmla v13.4s, v3.16b, v9.16b // tile0-oc2, tile0-oc3, tile1-oc2, tile1-oc3
-    
+
     .inst 0x4e88a490 // smmla v16.4s, v4.16b, v8.16b // tile2-oc0, tile2-oc1, tile3-oc0, tile3-oc1
     .inst 0x4e89a491 // smmla v17.4s, v4.16b, v9.16b // tile2-oc2, tile2-oc3, tile3-oc2, tile3-oc3
-    
+
     .inst 0x4e88a4b4 // smmla v20.4s, v5.16b, v8.16b // tile4-oc0, tile4-oc1, tile5-oc0, tile5-oc1
     .inst 0x4e89a4b5 // smmla v21.4s, v5.16b, v9.16b // tile4-oc2, tile4-oc3, tile5-oc2, tile5-oc3
 
@@ -877,7 +877,7 @@ LoopSz_TILE_4:
     .inst 0x4e89a48d // smmla v13.4s, v4.16b, v9.16b // tile0-oc2, tile0-oc3, tile1-oc2, tile1-oc3
     .inst 0x4e8aa48e // smmla v14.4s, v4.16b, v10.16b // tile0-oc4, tile0-oc5, tile1-oc4, tile1-oc5
     .inst 0x4e8ba48f // smmla v15.4s, v4.16b, v11.16b // tile0-oc6, tile0-oc7, tile1-oc6, tile1-oc7
-    
+
     .inst 0x4e88a4b0 // smmla v16.4s, v5.16b, v8.16b // tile2-oc0, tile2-oc1, tile3-oc0, tile3-oc1
     .inst 0x4e89a4b1 // smmla v17.4s, v5.16b, v9.16b // tile2-oc2, tile2-oc3, tile3-oc2, tile3-oc3
     .inst 0x4e8aa4b2 // smmla v18.4s, v5.16b, v10.16b // tile2-oc4, tile2-oc5, tile3-oc4, tile3-oc5
@@ -989,7 +989,7 @@ L4_LoopSz_TILE_4:
     subs x13, x13, #1
     .inst 0x4e88a48c // smmla v12.4s, v4.16b, v8.16b // tile0-oc0, tile0-oc1, tile1-oc0, tile1-oc1
     .inst 0x4e89a48d // smmla v13.4s, v4.16b, v9.16b // tile0-oc2, tile0-oc3, tile1-oc2, tile1-oc3
-    
+
     .inst 0x4e88a4b0 // smmla v16.4s, v5.16b, v8.16b // tile2-oc0, tile2-oc1, tile3-oc0, tile3-oc1
     .inst 0x4e89a4b1 // smmla v17.4s, v5.16b, v9.16b // tile2-oc2, tile2-oc3, tile3-oc2, tile3-oc3
     bne L4_LoopSz_TILE_4
@@ -1167,7 +1167,7 @@ Tile2LoopCheck:
     cbz x27, LoopDz_TILE_2
     REVERT_INPUT_DEQUANT_BIAS x27, x19, x26, x25
     bge LoopDz_TILE_2
-    
+
 
 LoopDz4_TILE_2:
     mov x11, x1 // src
@@ -1275,60 +1275,74 @@ TILE1_BLOCKNUM:
     movi v17.4s, #0
     movi v18.4s, #0
     movi v19.4s, #0
+    movi v24.4s, #0
+    movi v25.4s, #0
+    movi v26.4s, #0
+    movi v27.4s, #0
 cmp x13, #4
 blt LoopSz_TILE_1_lu1
 
 LoopSz1_TILE_1_lu4:
     ld1 {v5.16b, v6.16b, v7.16b, v8.16b}, [x12], #64     // weight
-    ld1 {v9.16b, v10.16b, v11.16b, v12.16b}, [x12], #64
     ld1 {v0.8b}, [x11], x22                              // src
     ld1 {v1.8b}, [x11], x22
-    ld1 {v2.8b}, [x11], x22
-    ld1 {v3.8b}, [x11], x22
 
-    // int4->int8
+    // int4->int8 - first two weight groups
     ushr v4.16b, v5.16b, #4
     ushr v14.16b, v6.16b, #4
     and v13.16b, v5.16b, v28.16b
     and v15.16b, v6.16b, v28.16b
 
+    ld1 {v9.16b, v10.16b, v11.16b, v12.16b}, [x12], #64
+
+    // Second weight group - unpack + SMMLA
     ushr v20.16b, v7.16b, #4
     ushr v21.16b, v8.16b, #4
     and v22.16b, v7.16b, v28.16b
     and v23.16b, v8.16b, v28.16b
 
-    ushr v24.16b, v9.16b, #4
-    ushr v25.16b, v10.16b, #4
-    and v26.16b, v9.16b, v28.16b
-    and v27.16b, v10.16b, v28.16b
 
-    ushr v5.16b, v11.16b, #4
-    ushr v6.16b, v12.16b, #4
-    and v7.16b, v11.16b, v28.16b
-    and v8.16b, v12.16b, v28.16b
-
-    sub x13, x13, #4
-
+    // First weight group SMMLA
     .inst 0x4e84a410 // smmla v16.4s, v0.16b, v4.16b
     .inst 0x4e8ea411 // smmla v17.4s, v0.16b, v14.16b
     .inst 0x4e8da412 // smmla v18.4s, v0.16b, v13.16b
     .inst 0x4e8fa413 // smmla v19.4s, v0.16b, v15.16b
 
-    .inst 0x4e94a430 // smmla v16.4s, v1.16b, v20.16b
-    .inst 0x4e95a431 // smmla v17.4s, v1.16b, v21.16b
-    .inst 0x4e96a432 // smmla v18.4s, v1.16b, v22.16b
-    .inst 0x4e97a433 // smmla v19.4s, v1.16b, v23.16b
+    ld1 {v2.8b}, [x11], x22
+
+
+    .inst 0x4e94a438 // smmla v24.4s, v1.16b, v20.16b
+    .inst 0x4e95a439 // smmla v25.4s, v1.16b, v21.16b
+    .inst 0x4e96a43a // smmla v26.4s, v1.16b, v22.16b
+    .inst 0x4e97a43b // smmla v27.4s, v1.16b, v23.16b
+
+    ld1 {v3.8b}, [x11], x22
+
+    // Third weight group - unpack + SMMLA
+    ushr v4.16b, v9.16b, #4
+    ushr v14.16b, v10.16b, #4
+    and v13.16b, v9.16b, v28.16b
+    and v15.16b, v10.16b, v28.16b
+
+    // Fourth weight group - unpack + SMMLA
+    ushr v5.16b, v11.16b, #4
+    ushr v6.16b, v12.16b, #4
+    and v7.16b, v11.16b, v28.16b
+    and v8.16b, v12.16b, v28.16b
+
+    .inst 0x4e84a450 // smmla v16.4s, v2.16b, v4.16b
+    .inst 0x4e8ea451 // smmla v17.4s, v2.16b, v14.16b
+    .inst 0x4e8da452 // smmla v18.4s, v2.16b, v13.16b
+    .inst 0x4e8fa453 // smmla v19.4s, v2.16b, v15.16b
+
+
+    .inst 0x4e85a478 // smmla v24.4s, v3.16b, v5.16b
+    .inst 0x4e86a479 // smmla v25.4s, v3.16b, v6.16b
+    .inst 0x4e87a47a // smmla v26.4s, v3.16b, v7.16b
+    .inst 0x4e88a47b // smmla v27.4s, v3.16b, v8.16b
+
+    sub x13, x13, #4
     cmp x13, #4
-    .inst 0x4e98a450 // smmla v16.4s, v2.16b, v24.16b
-    .inst 0x4e99a451 // smmla v17.4s, v2.16b, v25.16b
-    .inst 0x4e9aa452 // smmla v18.4s, v2.16b, v26.16b
-    .inst 0x4e9ba453 // smmla v19.4s, v2.16b, v27.16b
-
-    .inst 0x4e85a470 // smmla v16.4s, v3.16b, v5.16b
-    .inst 0x4e86a471 // smmla v17.4s, v3.16b, v6.16b
-    .inst 0x4e87a472 // smmla v18.4s, v3.16b, v7.16b
-    .inst 0x4e88a473 // smmla v19.4s, v3.16b, v8.16b
-
     bge LoopSz1_TILE_1_lu4
     cbz x13, LoopSzEnd_TILE_1
 
@@ -1348,6 +1362,10 @@ LoopSz_TILE_1_lu1:
     .inst 0x4e8ba453 // smmla v19.4s, v2.16b, v11.16b
     bne LoopSz_TILE_1_lu1
 LoopSzEnd_TILE_1:
+    add v16.4s, v16.4s, v24.4s
+    add v17.4s, v17.4s, v25.4s
+    add v18.4s, v18.4s, v26.4s
+    add v19.4s, v19.4s, v27.4s
     uzp1 v25.2d, v16.2d, v17.2d
     uzp1 v26.2d, v18.2d, v19.2d
     scvtf v25.4s, v25.4s
@@ -1426,36 +1444,44 @@ blt L4_LoopSz_TILE_1_lu1
 
 L4_LoopSz1_TILE_1_lu4:
     ld1 {v5.16b, v6.16b, v7.16b, v8.16b}, [x12], #64     // weight
-    ld1 {v9.16b, v10.16b, v11.16b, v12.16b}, [x12], #64
     ld1 {v0.8b}, [x11], x22                              // src
+    ld1 {v9.16b, v10.16b, v11.16b, v12.16b}, [x12], #64
     ld1 {v1.8b}, [x11], x22
     ld1 {v2.8b}, [x11], x22
     ld1 {v3.8b}, [x11], x22
 
-    // int4->int8
+    // int4->int8 - first two weight groups
     ushr v4.16b, v5.16b, #4
     ushr v14.16b, v6.16b, #4
-    ushr v20.16b, v7.16b, #4
-    ushr v21.16b, v8.16b, #4
-    ushr v24.16b, v9.16b, #4
-    ushr v25.16b, v10.16b, #4
-    ushr v5.16b, v11.16b, #4
-    ushr v6.16b, v12.16b, #4
 
-    sub x13, x13, #4
-
+    // First weight group SMMLA
     .inst 0x4e84a410 // smmla v16.4s, v0.16b, v4.16b
     .inst 0x4e8ea411 // smmla v17.4s, v0.16b, v14.16b
 
+    // Second weight group - unpack + SMMLA
+    ushr v20.16b, v7.16b, #4
+    ushr v21.16b, v8.16b, #4
+
     .inst 0x4e94a430 // smmla v16.4s, v1.16b, v20.16b
-    .inst 0x4e95a431 // smmla v17.4s, v1.16b, v21.16
-    cmp x13, #4
+    .inst 0x4e95a431 // smmla v17.4s, v1.16b, v21.16b
+
+    // Third weight group - unpack + SMMLA
+    ushr v24.16b, v9.16b, #4
+    ushr v25.16b, v10.16b, #4
+
+    sub x13, x13, #4
+
     .inst 0x4e98a450 // smmla v16.4s, v2.16b, v24.16b
     .inst 0x4e99a451 // smmla v17.4s, v2.16b, v25.16b
+
+    // Fourth weight group - unpack + SMMLA
+    ushr v5.16b, v11.16b, #4
+    ushr v6.16b, v12.16b, #4
 
     .inst 0x4e85a470 // smmla v16.4s, v3.16b, v5.16b
     .inst 0x4e86a471 // smmla v17.4s, v3.16b, v6.16b
 
+    cmp x13, #4
     bge L4_LoopSz1_TILE_1_lu4
     cbz x13, L4_LoopSzEnd_TILE_1
 

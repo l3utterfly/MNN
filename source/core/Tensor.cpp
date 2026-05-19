@@ -119,6 +119,7 @@ Tensor::Tensor(bool deepCopy, const Tensor* tensor) {
     mDescribe->mContent = tensor->mDescribe->mContent;
     mDescribe->setBackend(tensor->mDescribe->getBackend());
     mDescribe->mem = tensor->mDescribe->mem;
+    mDescribe->offset = tensor->mDescribe->offset;
     mBuffer.dim = TensorUtils::getDescribe(tensor)->dims;
     mBuffer.type = tensor->getType();
     mBuffer.device = tensor->deviceId();
@@ -428,6 +429,14 @@ void* Tensor::map(MapType mtype, DimensionType dtype) {
     auto bn = nativeDescribe->getBackend();
     if (nullptr == bn) {
         return mBuffer.host;
+    }
+
+    if (mtype == Tensor::MAP_TENSOR_READ) {
+        int syncResult = bn->onSync(mtype, false, this);
+        if (NO_EXECUTION == syncResult) {
+            MNN_PRINT("Warning, Backend has stop execute, return nullptr for tensor map addr\n");
+            return nullptr;
+        }
     }
 
     auto mapPtr = bn->onMapTensor(mtype, dtype, this);

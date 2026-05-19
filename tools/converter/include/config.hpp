@@ -42,6 +42,9 @@ public:
     int weightQuantBits = 0;// If weightQuantBits > 0, it means the bit
     bool weightQuantAsymmetric = true;
     int weightQuantBlock = -1;
+    bool useHQQ = false;
+    // Bit-width for quant scale/zero-point storage. 32 = fp32, 16 = fp16; future: 8/4.
+    int weightQuantScaleBit = 32;
     // The path of the model compression file that stores the int8 calibration table
     // or sparse parameters.
     std::string compressionParamsFile = "";
@@ -73,6 +76,9 @@ public:
     int64_t externalOffset = 0;
     bool useOriginRNNImpl = false;
     PostTreatContext* compressInfo = nullptr;
+    bool splitQuantBlock = false;
+    // Enable verbose output for each optimization pass (like LLVM's -debug-pass)
+    bool dumpPass = false;
 };
 
 #endif // CONFIG_HPP

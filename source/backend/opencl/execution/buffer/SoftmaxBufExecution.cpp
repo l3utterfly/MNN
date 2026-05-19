@@ -18,6 +18,7 @@ SoftmaxBufExecution::SoftmaxBufExecution(const std::vector<Tensor *> &inputs, in
     mAxis          = axis;
     mOpenCLBackend = static_cast<OpenCLBackend *>(backend);
     auto kernel = mOpenCLBackend->getOpenCLRuntime()->buildKernel("softmax_buf", "softmax_buf", {"-DSOFTMAX_LOCAL_SIZE=512"}, mOpenCLBackend->getPrecision());
+    OPENCL_CHECK_KERNEL_CTOR(kernel);
     mMaxWorkGroupSize = static_cast<uint32_t>(mOpenCLBackend->getOpenCLRuntime()->getMaxWorkGroupSize(kernel));
 }
 
@@ -123,11 +124,11 @@ ErrorCode SoftmaxBufExecution::onEncode(const std::vector<Tensor *> &inputs, con
         ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[1]);
         ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[2]);
         if(mNeedUnpackC4){
-            ret |= unit.kernel->get().setArg(idx++, openCLImage(output));
-            ret |= unit.kernel->get().setArg(idx++, openCLImage(mTempTensor.get()));
+            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(output));
+            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(mTempTensor.get()));
         }else{
-            ret |= unit.kernel->get().setArg(idx++, openCLImage(input));
-            ret |= unit.kernel->get().setArg(idx++, openCLImage(output));
+            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(input));
+            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(output));
         }
         if(inside == 1){
             ret |= unit.kernel->get().setArg(idx++, channel);
@@ -205,9 +206,7 @@ public:
 
             axis = index[axis];
             //1 : channel //2 : height
-            if (1 == axis || 2 == axis || 3 == axis) {
-                return new SoftmaxBufExecution(inputs, axis, op, backend);
-            }
+            if (1 == axis || 2 == axis || 3 == axis) OPENCL_CREATOR_CHECK(new SoftmaxBufExecution(inputs, axis, op, backend));
             return nullptr;
         } else {
             auto axis = op->main_as_Axis()->axis();
@@ -215,9 +214,7 @@ public:
                 axis = inputs[0]->dimensions() + axis;
             }
 
-            if (1 == axis || 2 == axis || 3 == axis) {
-                return new SoftmaxBufExecution(inputs, axis, op, backend);
-            }
+            if (1 == axis || 2 == axis || 3 == axis) OPENCL_CREATOR_CHECK(new SoftmaxBufExecution(inputs, axis, op, backend));
             return nullptr;
         }
     }

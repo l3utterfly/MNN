@@ -131,19 +131,20 @@ ldr x23, [x6, #56]  // fp32minmax
 ldr x26, [x6, #64]  // blockNum
 lsl x22, x7, #2 // eDest * SRC_UNIT
 
-mov x14, #-32
+mov x25, #-32
 cbz x27, TILE_12
-mov x14, #16
+sub x25, x22, #32
 
 TILE_12:
     cmp x7, #12
     blt TILE_8
     sub x4, x4, #128
+    mov x12, x2
+    mov x6, x0
+    mov x14, x5
     mov x20, x9
     mov x15, x8 // input kernel sum
-    mov x6, x27 // input dequant bias
     mov x21, x24 // input dequant scale
-    mov x12, #-320
 L8LoopDz_TILE_12:
     mov x11, x1
     mov x19, #0
@@ -159,8 +160,8 @@ TILE12_BLOCKNUM:
     SET_BIAS v28, v29, v30, v31
 
     L8LoopSz_TILE_12:
-        ld1 {v5.16b}, [x2], #16 // weight
-        ld1 {v0.16b, v1.16b, v2.16b}, [x11], #48 // src
+        ld1 {v5.16b}, [x12], #16 // weight
+        ld1 {v0.16b, v1.16b, v2.16b}, [x11], x22 // src
         // int4->int8
         ushr v3.16b, v5.16b, #4
         and v4.16b, v5.16b, v7.16b
@@ -198,9 +199,8 @@ TILE12_BLOCKNUM:
     L8LoopSzEnd_TILE_12:
 
     L8Tile12Quan:
-    ld1 {v0.4s, v1.4s}, [x2], #32 // scale
-    ld1 {v2.4s, v3.4s, v4.4s}, [x8], #48 // input kernel sum
-    ld1 {v5.4s, v6.4s}, [x2], #32 // weight quan zeropoint
+    ld1 {v0.4s, v1.4s, v2.4s, v3.4s}, [x12], #64 // weight scale&bias
+    ld1 {v4.4s, v5.4s, v6.4s}, [x8], x22 // input kernel sum
     Int32ToFloat v8, v9, v10, v11
     Int32ToFloat v12, v13, v14, v15
     Int32ToFloat v16, v17, v18, v19
@@ -216,7 +216,7 @@ TILE12_BLOCKNUM:
     MUL_SCALE v1, v28, v29, v30, v31
 
     ld1 {v0.4s, v1.4s}, [x24], #32
-    ld1 {v7.4s}, [x24], x14
+    ld1 {v7.4s}, [x24], x25
     MUL_EXTRA_SCALE v0, v8, v9, v10, v11
     MUL_EXTRA_SCALE v1, v12, v13, v14, v15
     MUL_EXTRA_SCALE v7, v16, v17, v18, v19
@@ -225,34 +225,34 @@ TILE12_BLOCKNUM:
     MUL_EXTRA_SCALE v7, v28, v29, v30, v31
 
     TILE12_L8_MLA_TERM:
-    MLA_WEIGHTZERO v8,  v2, v5, 0 // tile:0, oc:0-3
-    MLA_WEIGHTZERO v9,  v2, v5, 1 // tile:1, oc:0-3
-    MLA_WEIGHTZERO v10, v2, v5, 2 // tile:2, oc:0-3
-    MLA_WEIGHTZERO v11, v2, v5, 3 // tile:3, oc:0-3
-    MLA_WEIGHTZERO v12, v3, v5, 0 // tile:4, oc:0-3
-    MLA_WEIGHTZERO v13, v3, v5, 1 // tile:5, oc:0-3
-    MLA_WEIGHTZERO v14, v3, v5, 2 // tile:6, oc:0-3
-    MLA_WEIGHTZERO v15, v3, v5, 3 // tile:7, oc:0-3
-    MLA_WEIGHTZERO v16, v4, v5, 0 // tile:8, oc:0-3
-    MLA_WEIGHTZERO v17, v4, v5, 1 // tile:9, oc:0-3
-    MLA_WEIGHTZERO v18, v4, v5, 2 // tile:10, oc:0-3 
-    MLA_WEIGHTZERO v19, v4, v5, 3 // tile:11, oc:0-3
+    MLA_WEIGHTZERO v8,  v4, v2, 0 // tile:0, oc:0-3
+    MLA_WEIGHTZERO v9,  v4, v2, 1 // tile:1, oc:0-3
+    MLA_WEIGHTZERO v10, v4, v2, 2 // tile:2, oc:0-3
+    MLA_WEIGHTZERO v11, v4, v2, 3 // tile:3, oc:0-3
+    MLA_WEIGHTZERO v12, v5, v2, 0 // tile:4, oc:0-3
+    MLA_WEIGHTZERO v13, v5, v2, 1 // tile:5, oc:0-3
+    MLA_WEIGHTZERO v14, v5, v2, 2 // tile:6, oc:0-3
+    MLA_WEIGHTZERO v15, v5, v2, 3 // tile:7, oc:0-3
+    MLA_WEIGHTZERO v16, v6, v2, 0 // tile:8, oc:0-3
+    MLA_WEIGHTZERO v17, v6, v2, 1 // tile:9, oc:0-3
+    MLA_WEIGHTZERO v18, v6, v2, 2 // tile:10, oc:0-3 
+    MLA_WEIGHTZERO v19, v6, v2, 3 // tile:11, oc:0-3
 
-    MLA_WEIGHTZERO v20, v2, v6, 0 // tile:0, oc:4-7
-    MLA_WEIGHTZERO v21, v2, v6, 1 // tile:1, oc:4-7
-    MLA_WEIGHTZERO v22, v2, v6, 2 // tile:2, oc:4-7
-    MLA_WEIGHTZERO v23, v2, v6, 3 // tile:3, oc:4-7
-    MLA_WEIGHTZERO v24, v3, v6, 0 // tile:4, oc:4-7
-    MLA_WEIGHTZERO v25, v3, v6, 1 // tile:5, oc:4-7
-    MLA_WEIGHTZERO v26, v3, v6, 2 // tile:6, oc:4-7 
-    MLA_WEIGHTZERO v27, v3, v6, 3 // tile:7, oc:4-7
-    MLA_WEIGHTZERO v28, v4, v6, 0 // tile:8, oc:4-7
-    MLA_WEIGHTZERO v29, v4, v6, 1 // tile:9, oc:4-7
-    MLA_WEIGHTZERO v30, v4, v6, 2 // tile:10, oc:4-7
-    MLA_WEIGHTZERO v31, v4, v6, 3 // tile:11, oc:4-7
+    MLA_WEIGHTZERO v20, v4, v3, 0 // tile:0, oc:4-7
+    MLA_WEIGHTZERO v21, v4, v3, 1 // tile:1, oc:4-7
+    MLA_WEIGHTZERO v22, v4, v3, 2 // tile:2, oc:4-7
+    MLA_WEIGHTZERO v23, v4, v3, 3 // tile:3, oc:4-7
+    MLA_WEIGHTZERO v24, v5, v3, 0 // tile:4, oc:4-7
+    MLA_WEIGHTZERO v25, v5, v3, 1 // tile:5, oc:4-7
+    MLA_WEIGHTZERO v26, v5, v3, 2 // tile:6, oc:4-7 
+    MLA_WEIGHTZERO v27, v5, v3, 3 // tile:7, oc:4-7
+    MLA_WEIGHTZERO v28, v6, v3, 0 // tile:8, oc:4-7
+    MLA_WEIGHTZERO v29, v6, v3, 1 // tile:9, oc:4-7
+    MLA_WEIGHTZERO v30, v6, v3, 2 // tile:10, oc:4-7
+    MLA_WEIGHTZERO v31, v6, v3, 3 // tile:11, oc:4-7
 
     cbz x27, TILE12_ADD_DSTV
-    ld1 {v0.4s, v1.4s, v2.4s}, [x27], #48 // input dequant bias
+    ld1 {v0.4s, v1.4s, v2.4s}, [x27], x22 // input dequant bias
     ld1 {v3.4s, v4.4s}, [x28], #32 // weight kernel sum
     MLA_WEIGHTZERO v8, v0, v3, 0
     MLA_WEIGHTZERO v9, v0, v3, 1
@@ -291,9 +291,10 @@ TILE12_BLOCKNUM:
     ADD_FLOAT v16, v17, v18, v19, v0, v1, v2, v3
     ADD_FLOAT v20, v21, v22, v23, v4, v5, v6, v7
     ld1 {v0.4s, v1.4s, v2.4s, v3.4s}, [x10], #64
-    ld1 {v4.4s, v5.4s, v6.4s, v7.4s}, [x10], x12
+    ld1 {v4.4s, v5.4s, v6.4s, v7.4s}, [x10]
     ADD_FLOAT v24, v25, v26, v27, v0, v1, v2, v3
     ADD_FLOAT v28, v29, v30, v31, v4, v5, v6, v7
+    sub x10, x10, #320
 
     TILE12_L8_ACCUM_BUFFER:
     add x19, x19, #1
@@ -304,11 +305,12 @@ TILE12_BLOCKNUM:
     st1 {v16.4s, v17.4s, v18.4s, v19.4s}, [x10], #64
     st1 {v20.4s, v21.4s, v22.4s, v23.4s}, [x10], #64
     st1 {v24.4s, v25.4s, v26.4s, v27.4s}, [x10], #64
-    st1 {v28.4s, v29.4s, v30.4s, v31.4s}, [x10], x12
+    st1 {v28.4s, v29.4s, v30.4s, v31.4s}, [x10]
+    sub x10, x10, #320
     b TILE12_BLOCKNUM
 
     TILE12_POST:
-    sub x5, x5, #1
+    sub x14, x14, #1
     cbz x9, TILE12_CVT_FP16
     ld1 {v0.4s, v1.4s}, [x20], #32
     ADD_BIAS_FLOAT v8, v9, v10, v11, v0
@@ -336,15 +338,31 @@ TILE12_BLOCKNUM:
 
     TILE12_STORE:
 
-    st1 {v0.8h, v1.8h, v2.8h, v3.8h}, [x0], #64
-    st1 {v4.8h, v5.8h, v6.8h, v7.8h}, [x0], #64
-    st1 {v8.8h, v9.8h, v10.8h, v11.8h}, [x0], x4
+    st1 {v0.8h, v1.8h, v2.8h, v3.8h}, [x6], #64
+    st1 {v4.8h, v5.8h, v6.8h, v7.8h}, [x6], #64
+    st1 {v8.8h, v9.8h, v10.8h, v11.8h}, [x6], x4
     L8Tile12LoopCheck:
-    cbz x5, End
+    cbz x14, Tile12End
     mov x8, x15 // revert input kernel sum
     mov x24, x21 // revert input dequant scale
-    mov x27, x6 // revert input dequant bias
+    cbz x27, L8LoopDz_TILE_12
+    REVERT_INPUT_DEQUANT_BIAS x27, x19, x26, x22
     b L8LoopDz_TILE_12
+
+Tile12End:
+
+    add x0, x0, #192
+    sub x7, x7, #12
+    cbz x7, End
+    add x1, x1, #48
+    add x8, x15, #48
+    add x24, x21, #48
+    add x4, x4, #128 // revert x4
+
+    cbz x27, TILE_8
+    REVERT_INPUT_DEQUANT_BIAS x27, x19, x26, x22
+    REVERT_WEIGHT_KERNEL_SUM x28, x14, x26, x5
+    add x27, x27, #48
 
 TILE_8:
     mov x25, #0
@@ -690,6 +708,9 @@ TILE1_BLOCKNUM:
     blt L8LoopSz_TILE_1_lu1
     cmp x13, #8
     blt L8LoopSz_TILE_1_lu4
+
+    movi v30.16b, #0
+    movi v31.16b, #0
     L8LoopSz_TILE_1_lu8:
         ld1 {v3.16b, v4.16b, v5.16b, v6.16b}, [x12], #64 // weight: hu=0,1,2,3,pack=0~7
         ld1 {v10.16b, v11.16b, v12.16b, v13.16b}, [x12], #64
@@ -724,27 +745,31 @@ TILE1_BLOCKNUM:
         cmp x13, #8
         .inst 0x4f80e1c8 // sdot v8.4s, v14.16b, v0.4b[0]
         .inst 0x4f80e2c9 // sdot v9.4s, v22.16b, v0.4b[0]
-        .inst 0x4fa0e1e8 // sdot v8.4s, v15.16b, v0.4b[1]
-        .inst 0x4fa0e2e9 // sdot v9.4s, v23.16b, v0.4b[1]
+        .inst 0x4fa0e1fe // sdot v30.4s, v15.16b, v0.4b[1]
+        .inst 0x4fa0e2ff // sdot v31.4s, v23.16b, v0.4b[1]
         .inst 0x4f80ea48 // sdot v8.4s, v18.16b, v0.4b[2]
         .inst 0x4f80eb09 // sdot v9.4s, v24.16b, v0.4b[2]
-        .inst 0x4fa0eaa8 // sdot v8.4s, v21.16b, v0.4b[3]
-        .inst 0x4fa0eb29 // sdot v9.4s, v25.16b, v0.4b[3]
+        .inst 0x4fa0eabe // sdot v30.4s, v21.16b, v0.4b[3]
+        .inst 0x4fa0eb3f // sdot v31.4s, v25.16b, v0.4b[3]
 
         .inst 0x4f81e208 // sdot v8.4s, v16.16b, v1.4b[0]
         .inst 0x4f81e229 // sdot v9.4s, v17.16b, v1.4b[0]
-        .inst 0x4fa1e268 // sdot v8.4s, v19.16b, v1.4b[1]
-        .inst 0x4fa1e289 // sdot v9.4s, v20.16b, v1.4b[1]
+        .inst 0x4fa1e27e // sdot v30.4s, v19.16b, v1.4b[1]
+        .inst 0x4fa1e29f // sdot v31.4s, v20.16b, v1.4b[1]
         .inst 0x4f81eb48 // sdot v8.4s, v26.16b, v1.4b[2]
         .inst 0x4f81eb69 // sdot v9.4s, v27.16b, v1.4b[2]
-        .inst 0x4fa1eb88 // sdot v8.4s, v28.16b, v1.4b[3]
-        .inst 0x4fa1eba9 // sdot v9.4s, v29.16b, v1.4b[3]
+        .inst 0x4fa1eb9e // sdot v30.4s, v28.16b, v1.4b[3]
+        .inst 0x4fa1ebbf // sdot v31.4s, v29.16b, v1.4b[3]
         bge L8LoopSz_TILE_1_lu8
+    add v8.4s, v8.4s, v30.4s
+    add v9.4s, v9.4s, v31.4s
 
     cbz x13, L8LoopSzEnd_TILE_1
     cmp x13, #4
     blt L8LoopSz_TILE_1_lu1
 
+    movi v30.16b, #0
+    movi v31.16b, #0
     L8LoopSz_TILE_1_lu4:
         ld1 {v3.16b, v4.16b, v5.16b, v6.16b}, [x12], #64 // weight: hu=0,1,2,3,pack=0~7
         ld1 {v0.4s}, [x11], #16 // src
@@ -766,13 +791,15 @@ TILE1_BLOCKNUM:
         cmp x13, #4
         .inst 0x4f80e188 // sdot v8.4s, v12.16b, v0.4b[0]
         .inst 0x4f80e2c9 // sdot v9.4s, v22.16b, v0.4b[0]
-        .inst 0x4fa0e1e8 // sdot v8.4s, v15.16b, v0.4b[1]
-        .inst 0x4fa0e2e9 // sdot v9.4s, v23.16b, v0.4b[1]
+        .inst 0x4fa0e1fe // sdot v30.4s, v15.16b, v0.4b[1]
+        .inst 0x4fa0e2ff // sdot v31.4s, v23.16b, v0.4b[1]
         .inst 0x4f80ea48 // sdot v8.4s, v18.16b, v0.4b[2]
         .inst 0x4f80eb09 // sdot v9.4s, v24.16b, v0.4b[2]
-        .inst 0x4fa0eaa8 // sdot v8.4s, v21.16b, v0.4b[3]
-        .inst 0x4fa0eb29 // sdot v9.4s, v25.16b, v0.4b[3]
+        .inst 0x4fa0eabe // sdot v30.4s, v21.16b, v0.4b[3]
+        .inst 0x4fa0eb3f // sdot v31.4s, v25.16b, v0.4b[3]
         bge L8LoopSz_TILE_1_lu4
+    add v8.4s, v8.4s, v30.4s
+    add v9.4s, v9.4s, v31.4s
 
     cbz x13, L8LoopSzEnd_TILE_1
 

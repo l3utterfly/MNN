@@ -27,6 +27,9 @@ extern const char* conv_2d_c1_subgroup_buf;
 #endif
 #endif
 #ifndef MNN_OPENCL_BUFFER_CLOSED
+extern const char* linear_attention_buf;
+#endif
+#ifndef MNN_OPENCL_BUFFER_CLOSED
 extern const char* matmul_local_buf;
 #endif
 #ifndef MNN_OPENCL_BUFFER_CLOSED
@@ -113,6 +116,9 @@ extern const char* unary_subgroup_buf;
 #endif
 extern const char* gemm;
 extern const char* depthwise_deconv2d;
+#ifndef MNN_OPENCL_BUFFER_CLOSED
+extern const char* topkv2_buf;
+#endif
 extern const char* range;
 #ifndef MNN_OPENCL_BUFFER_CLOSED
 extern const char* scale_buf;
@@ -132,9 +138,6 @@ extern const char* layernorm_buf;
 #endif
 #ifndef MNN_OPENCL_BUFFER_CLOSED
 extern const char* softmax_buf;
-#endif
-#ifndef MNN_OPENCL_BUFFER_CLOSED
-extern const char* gather_buf;
 #endif
 #ifndef MNN_OPENCL_BUFFER_CLOSED
 #ifdef MNN_SUPPORT_INTEL_SUBGROUP
@@ -159,9 +162,6 @@ extern const char* buffer_convert_buf;
 #endif
 extern const char* matmul;
 extern const char* binary;
-#ifndef MNN_OPENCL_BUFFER_CLOSED
-extern const char* loop_buf;
-#endif
 extern const char* roi_pooling;
 extern const char* depthwise_conv2d;
 extern const char* layernorm;
@@ -198,6 +198,9 @@ const std::map<std::string, const char*> OpenCLProgramMap =
 #ifdef MNN_SUPPORT_INTEL_SUBGROUP
   { "conv_2d_c1_subgroup_buf", conv_2d_c1_subgroup_buf },
 #endif
+#endif
+#ifndef MNN_OPENCL_BUFFER_CLOSED
+  { "linear_attention_buf", linear_attention_buf },
 #endif
 #ifndef MNN_OPENCL_BUFFER_CLOSED
   { "matmul_local_buf", matmul_local_buf },
@@ -286,6 +289,9 @@ const std::map<std::string, const char*> OpenCLProgramMap =
 #endif
   { "gemm", gemm },
   { "depthwise_deconv2d", depthwise_deconv2d },
+#ifndef MNN_OPENCL_BUFFER_CLOSED
+  { "topkv2_buf", topkv2_buf },
+#endif
   { "range", range },
 #ifndef MNN_OPENCL_BUFFER_CLOSED
   { "scale_buf", scale_buf },
@@ -305,9 +311,6 @@ const std::map<std::string, const char*> OpenCLProgramMap =
 #endif
 #ifndef MNN_OPENCL_BUFFER_CLOSED
   { "softmax_buf", softmax_buf },
-#endif
-#ifndef MNN_OPENCL_BUFFER_CLOSED
-  { "gather_buf", gather_buf },
 #endif
 #ifndef MNN_OPENCL_BUFFER_CLOSED
 #ifdef MNN_SUPPORT_INTEL_SUBGROUP
@@ -332,9 +335,6 @@ const std::map<std::string, const char*> OpenCLProgramMap =
 #endif
   { "matmul", matmul },
   { "binary", binary },
-#ifndef MNN_OPENCL_BUFFER_CLOSED
-  { "loop_buf", loop_buf },
-#endif
   { "roi_pooling", roi_pooling },
   { "depthwise_conv2d", depthwise_conv2d },
   { "layernorm", layernorm },
@@ -359,9 +359,10 @@ const std::map<std::string, std::string> OpenCLProgramMd5Map =
   { "range_buf", "427ab3d6f9ad0cafd08a0b08264df779" },
   { "self_attention_buf", "653a99a0693d9173084de43e577f9cfd" },
   { "winogradTransformSource2_3_1", "5cae94a94c822b4b6f82e238ab518f4a" },
-  { "gemv_conv1x1_buf", "48afa760997cd9dfe22a116d7bb4b394" },
+  { "gemv_conv1x1_buf", "c345830afdfa6154633950e4a7f9e60e" },
   { "raster", "0cf8ee1f7927d0027ce0f07ad564266e" },
   { "conv_2d_c1_subgroup_buf", "04a28a410c79fa6917827d16e189f322" },
+  { "linear_attention_buf", "c6121abc7fd73edace67153e5768845f" },
   { "matmul_local_buf", "2497e20b734f5b77d021524648437b75" },
   { "conv_2d_int_buf", "6903dc7ca47d116549ac2b7c4bbf4587" },
   { "interp_buf", "2e5ff1b5184be705580ab6a221864a0c" },
@@ -375,7 +376,7 @@ const std::map<std::string, std::string> OpenCLProgramMd5Map =
   { "pooling_subgroup_buf", "9c935c0caabe2ee20822fcfd7722472e" },
   { "pooling_buf", "806c95095431e361be2af7f4e9eae65e" },
   { "winogradTransformSource2_5_1", "f0ee12556faf4fe0222e2a4e64c53c5c" },
-  { "unary_buf", "bfa4bab8f0cf486ae77eb27193f03b9a" },
+  { "unary_buf", "76131af4513fb2e40e62005048f4c4f3" },
   { "depthwise_conv2d_buf", "d1c201a09afccebe794d50027acabdc1" },
   { "glmem_convert", "ee4866b2d889824e48d58fa3a78795d4" },
   { "winogradTransform_buf", "efa5fda527fce5820ba48b90a4707fa7" },
@@ -387,14 +388,15 @@ const std::map<std::string, std::string> OpenCLProgramMd5Map =
   { "gemm_buf", "b030b6eacaf65a54e8eabee2755f892a" },
   { "conv_2d_int", "985925b9f24d85fa38df2df9b01fafc5" },
   { "copy_buffer_to_image2d", "a72ed287711f9bb78a2cfa9726a1fa92" },
-  { "loop", "b739a26d78ebe48afd07e55244bdb260" },
+  { "loop", "4849a55cd99f0ebab72a10527455341f" },
   { "argmax_buf", "ae4a1ae3461b2758609022ac7569b11b" },
   { "buffer_convert_subgroup_buf", "d968b717e537464a7fa08e742c9a0319" },
   { "attention_buf", "7d05b22865927ca19dae5762ba6f1df9" },
   { "groupnorm_buf", "7f4b041b77ba98165ab624d94444f327" },
   { "unary_subgroup_buf", "31e3768f899da6da45084f617b13c282" },
   { "gemm", "5729018147348682e02762ed5ec14d0c" },
-  { "depthwise_deconv2d", "5a3e5498276638d6b73cf7b5e19bd750" },
+  { "depthwise_deconv2d", "810f69205dede9b38e4858aad621fa71" },
+  { "topkv2_buf", "df1be3cf447e7cbf9a0754dc66e7847b" },
   { "range", "97feaf25d837a325382c162ad77ae0ca" },
   { "scale_buf", "9176b8e86fd4d326e7fa14640ce13b48" },
   { "matmul_buf", "b66faece7f0591d49c289e5227d9f680" },
@@ -405,7 +407,6 @@ const std::map<std::string, std::string> OpenCLProgramMd5Map =
   { "winogradTransformDest2_3_1", "f2aaa52d652565e70a44868d4f6028e9" },
   { "layernorm_buf", "5f6b88b29da72f51bdc85064b5663bb2" },
   { "softmax_buf", "12052d403f3fa0cdfea2559296e88e6c" },
-  { "gather_buf", "cb5cf89ff808f051ada3023876a402a4" },
   { "conv_2d_c16_subgroup_buf", "81f9027f323b6890d08d49dab10a15e4" },
   { "input_transe_buf", "c80482cd531add8582edc242bcbfa947" },
   { "reduction_buf", "c16506adcebf7760a1a3c96ce0d386ee" },
@@ -415,11 +416,10 @@ const std::map<std::string, std::string> OpenCLProgramMd5Map =
   { "buffer_convert_buf", "e633544642a1a9a61755c913cfe77017" },
   { "matmul", "a3e51ece4be2eb0f28266718b313c24e" },
   { "binary", "5683a6a6fd24660f0d05a70938fa6a62" },
-  { "loop_buf", "0a3e7e970b69c27e15dbbe3dbda7c798" },
   { "roi_pooling", "ba4a81b7ec7058d14afb377c18674a76" },
   { "depthwise_conv2d", "a23dd590e0bdcdd60987e8bab5ed529f" },
   { "layernorm", "bd457b4bd4f3c57818bc17e073b09e74" },
-  { "gemm_conv1x1_buf", "020f536facd3b4e4b519b30d6bfc89a1" },
+  { "gemm_conv1x1_buf", "5f8fd2f6e8278a2e003825a001b733ac" },
   { "winogradTransformDest2_5_1", "4f3d0d6b3e0ee7f0bff97acfbbdf653f" },
   { "cast_buf", "f39e5c1ca2fa4b39eac2af1c7934ba85" },
   { "reduction", "222cc3d09d2d5f2e0db4679a17aa8628" },

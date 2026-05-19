@@ -8,6 +8,7 @@ import android.content.Context
 import android.net.Uri
 import android.text.TextUtils
 import android.util.Log
+import org.json.JSONArray
 
 class ChatDataManager private constructor(context: Context) {
     private val dbHelper = ChatDatabaseHelper(context)
@@ -56,12 +57,12 @@ class ChatDataManager private constructor(context: Context) {
             return
         }
         
-        if (chatDataItem.text.isNullOrEmpty() && chatDataItem.imageUri == null && chatDataItem.audioUri == null) {
+        if (chatDataItem.text.isNullOrEmpty() && chatDataItem.imageUris.isNullOrEmpty() && chatDataItem.audioUri == null && chatDataItem.videoUri == null) {
             Log.w(TAG, "addChatData: chatDataItem has no content to save")
             return
         }
         
-        Log.d(TAG, "addChatData: sessionId=$sessionId, type=${chatDataItem.type}, textLength=${chatDataItem.text?.length ?: 0}, hasImage=${chatDataItem.imageUri != null}")
+        Log.d(TAG, "addChatData: sessionId=$sessionId, type=${chatDataItem.type}, textLength=${chatDataItem.text?.length ?: 0}, hasImage=${!chatDataItem.imageUris.isNullOrEmpty()}, hasVideo=${chatDataItem.videoUri != null}")
         
         val db = dbHelper.writableDatabase
         try {
@@ -73,8 +74,12 @@ class ChatDataManager private constructor(context: Context) {
             values.put(ChatDatabaseHelper.COLUMN_TIME, chatDataItem.time)
             values.put(ChatDatabaseHelper.COLUMN_TEXT, chatDataItem.text)
             values.put(ChatDatabaseHelper.COLUMN_TYPE, chatDataItem.type)
-            if (chatDataItem.imageUri != null) {
-                values.put(ChatDatabaseHelper.COLUMN_IMAGE_URI, chatDataItem.imageUri.toString())
+            if (!chatDataItem.imageUris.isNullOrEmpty()) {
+                val jsonArray = JSONArray()
+                chatDataItem.imageUris!!.forEach { uri ->
+                    jsonArray.put(uri.toString())
+                }
+                values.put(ChatDatabaseHelper.COLUMN_IMAGE_URI, jsonArray.toString())
             } else {
                 values.put(ChatDatabaseHelper.COLUMN_IMAGE_URI, null as String?)
             }
@@ -82,6 +87,11 @@ class ChatDataManager private constructor(context: Context) {
                 values.put(ChatDatabaseHelper.COLUMN_AUDIO_URI, chatDataItem.audioUri.toString())
             } else {
                 values.put(ChatDatabaseHelper.COLUMN_AUDIO_URI, null as String?)
+            }
+            if (chatDataItem.videoUri != null) {
+                values.put(ChatDatabaseHelper.COLUMN_VIDEO_URI, chatDataItem.videoUri.toString())
+            } else {
+                values.put(ChatDatabaseHelper.COLUMN_VIDEO_URI, null as String?)
             }
             values.put(ChatDatabaseHelper.COLUMN_AUDIO_DURATION, chatDataItem.audioDuration)
             values.put(ChatDatabaseHelper.COLUMN_DISPLAY_TEXT, chatDataItem.displayText)
@@ -147,20 +157,44 @@ class ChatDataManager private constructor(context: Context) {
                 cursor.getString(cursor.getColumnIndex(ChatDatabaseHelper.COLUMN_IMAGE_URI))
             val audioUriStr =
                 cursor.getString(cursor.getColumnIndex(ChatDatabaseHelper.COLUMN_AUDIO_URI))
+            val videoUriStr =
+                cursor.getString(cursor.getColumnIndex(ChatDatabaseHelper.COLUMN_VIDEO_URI))
             val audioDuration =
                 cursor.getFloat(cursor.getColumnIndex(ChatDatabaseHelper.COLUMN_AUDIO_DURATION))
             val displayText =
                 cursor.getString(cursor.getColumnIndex(ChatDatabaseHelper.COLUMN_DISPLAY_TEXT))
             val chatDataItem = ChatDataItem(time, type, text)
-            if (imageUriStr != null) {
-                chatDataItem.imageUri = Uri.parse(imageUriStr)
+            
+            if (!TextUtils.isEmpty(imageUriStr)) {
+                try {
+                    if (imageUriStr.startsWith("[")) {
+                        val jsonArray = JSONArray(imageUriStr)
+                        val uris = mutableListOf<Uri>()
+                        for (i in 0 until jsonArray.length()) {
+                            uris.add(Uri.parse(jsonArray.getString(i)))
+                        }
+                        chatDataItem.imageUris = uris
+                    } else {
+                        chatDataItem.imageUris = listOf(Uri.parse(imageUriStr))
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error parsing image URI: $imageUriStr", e)
+                    // Fallback to single URI if parsing failed but it's not null
+                    if (!TextUtils.isEmpty(imageUriStr)) {
+                         chatDataItem.imageUris = listOf(Uri.parse(imageUriStr))
+                    }
+                }
             }
+            
             if (!TextUtils.isEmpty(displayText)) {
                 chatDataItem.displayText = displayText
             }
             if (audioUriStr != null) {
                 chatDataItem.audioUri = Uri.parse(audioUriStr)
                 chatDataItem.audioDuration = audioDuration
+            }
+            if (videoUriStr != null) {
+                chatDataItem.videoUri = Uri.parse(videoUriStr)
             }
             val thinkingText =
                 cursor.getString(cursor.getColumnIndex(ChatDatabaseHelper.COLUMN_THINKING_TEXT))
@@ -283,6 +317,48 @@ class ChatDataManager private constructor(context: Context) {
         } finally {
             db.close()
         }
+    }
+
+    /**
+     * Delete all sessions for a given modelId.
+     * Returns the list of deleted session IDs for resource cleanup.
+     */
+    fun deleteSessionsByModelId(modelId: String): List<String> {
+        val deletedSessionIds = mutableListOf<String>()
+        val db = dbHelper.writableDatabase
+        try {
+            // First get all session IDs for this model
+            val cursor = db.query(
+                ChatDatabaseHelper.TABLE_SESSION,
+                arrayOf(ChatDatabaseHelper.COLUMN_SESSION_ID),
+                ChatDatabaseHelper.COLUMN_MODEL_ID + "=?",
+                arrayOf(modelId), null, null, null
+            )
+            while (cursor.moveToNext()) {
+                deletedSessionIds.add(cursor.getString(0))
+            }
+            cursor.close()
+
+            // Delete chat data for all sessions
+            if (deletedSessionIds.isNotEmpty()) {
+                val placeholders = deletedSessionIds.joinToString(",") { "?" }
+                db.delete(
+                    ChatDatabaseHelper.TABLE_CHAT,
+                    ChatDatabaseHelper.COLUMN_SESSION_ID + " IN ($placeholders)",
+                    deletedSessionIds.toTypedArray()
+                )
+
+                // Delete sessions
+                db.delete(
+                    ChatDatabaseHelper.TABLE_SESSION,
+                    ChatDatabaseHelper.COLUMN_MODEL_ID + "=?",
+                    arrayOf(modelId)
+                )
+            }
+        } finally {
+            db.close()
+        }
+        return deletedSessionIds
     }
 
     fun recordDownloadHistory(modelId: String, modelPath: String, modelType: String = "LLM") {

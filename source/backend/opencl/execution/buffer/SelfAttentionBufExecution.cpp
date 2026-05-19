@@ -19,6 +19,7 @@ SelfAttentionBufImpl::SelfAttentionBufImpl(const MNN::Op *op, Backend *backend){
     mNumHead = fmha_v2_param->heads();
     mOpenCLBackend = static_cast<OpenCLBackend *>(backend);
     auto kernel = mOpenCLBackend->getOpenCLRuntime()->buildKernel("self_attention_buf", "softmax_inside", {"-DSOFTMAX_LOCAL_SIZE=512"}, mOpenCLBackend->getPrecision());
+    OPENCL_CHECK_KERNEL_CTOR(kernel);
     mMaxWorkGroupSize = static_cast<uint32_t>(mOpenCLBackend->getOpenCLRuntime()->getMaxWorkGroupSize(kernel));
 }
 
@@ -54,6 +55,13 @@ ErrorCode SelfAttentionBufImpl::onResize(Backend *backend, const std::vector<Ten
     if(seq_len > 1024) {
         mQseqSplitNum = (seq_len >= 4096 && seq_len % 64 == 0) ? 8 : ((seq_len < 2048) ? 2 : 4);
     }
+    // splitPiecesSize need aligned to 32, make sure XgemmBatched globalsize be divisible by localsize
+    int splitPiecesSize = ROUND_UP(seq_len, tile_mn) / mQseqSplitNum;
+    while((splitPiecesSize % 32) != 0){
+        tile_mn *= 2;
+        splitPiecesSize = ROUND_UP(seq_len, tile_mn) / mQseqSplitNum;
+    }
+    
     int buffer_size = batch * mNumHead * ROUND_UP(mHeadDim, tile_k) * ROUND_UP(seq_len, tile_mn);
     int buffer_qk_size = batch * mNumHead * ROUND_UP(seq_len, tile_mn) * ROUND_UP(seq_len, tile_mn) / mQseqSplitNum;
     int buffer_v_size = batch * mNumHead * ROUND_UP(mHeadDim, tile_mn) * ROUND_UP(seq_len, tile_mn);
@@ -569,7 +577,7 @@ public:
         for (int i = 0; i < outputs.size(); ++i) {
             TensorUtils::setTensorSupportPack(outputs[i], false);
         }
-        return new SelfAttentionBufExecution(op, backend);
+        OPENCL_CREATOR_CHECK(new SelfAttentionBufExecution(op, backend));
     }
 };
 REGISTER_OPENCL_OP_CREATOR_TRANSFORMER(SelfAttentionBufCreator, OpType_FmhaV2, BUFFER);

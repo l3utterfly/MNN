@@ -9,13 +9,13 @@
 #define LLMCONFIG_Hpp
 
 #include <vector>
+#include <unordered_map>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <fstream>
-#include <rapidjson/document.h>
-#include <rapidjson/writer.h>
-#include <rapidjson/stringbuffer.h>
-
+#include <MNN/MNNDefine.h>
+#include "ujson.hpp"
 
 
 namespace MNN {
@@ -44,186 +44,11 @@ static inline std::string file_name(const std::string& path) {
     }
 }
 
-bool merge_json(rapidjson::Value& destination, const rapidjson::Value& source,
-                rapidjson::Document::AllocatorType& allocator);
-
-class rapid_json_wrapper {
-public:
-    rapidjson::Document document;
-    rapid_json_wrapper() {}
-    rapid_json_wrapper(rapidjson::Document doc) : document(std::move(doc)) {}
-    rapid_json_wrapper(const rapid_json_wrapper &other) {
-        document.CopyFrom(other.document, document.GetAllocator());
-    }
-    rapid_json_wrapper& operator=(const rapid_json_wrapper& other) {
-        if (this != &other) {
-            document.SetObject();
-            document.CopyFrom(other.document, document.GetAllocator());
-        }
-        return *this;
-    }
-    rapid_json_wrapper(rapid_json_wrapper&& other) noexcept : document(std::move(other.document)) {}
-    rapid_json_wrapper& operator=(rapid_json_wrapper&& other) noexcept {
-        if (this != &other) {
-            document.SetObject();
-            document.GetAllocator().Clear();
-            document = std::move(other.document);
-        }
-        return *this;
-    }
-    static rapid_json_wrapper parse(const std::ifstream& ifile) {
-        std::ostringstream ostr;
-        ostr << ifile.rdbuf();
-        rapidjson::Document document;
-        document.Parse(ostr.str().c_str());
-        rapid_json_wrapper json_wrapper(std::move(document));
-        return json_wrapper;
-    }
-    static rapid_json_wrapper parse(const char* str) {
-        rapidjson::Document document;
-        document.Parse(str);
-        rapid_json_wrapper json_wrapper(std::move(document));
-        return json_wrapper;
-    }
-    bool empty() { return document.IsNull(); }
-    bool merge(const char* str) {
-        rapidjson::Document input_doc;
-        input_doc.Parse(str);
-        if (input_doc.HasParseError()) {
-            return false;
-        }
-        // merge
-        rapidjson::Document::AllocatorType& allocator = document.GetAllocator();
-        return merge_json(document, input_doc, allocator);
-    }
-    bool merge_and_clear(rapid_json_wrapper& source_) {
-        // rapid_json_wrapper has document object
-        rapidjson::Value& source = source_.document;
-        rapidjson::Value& destination = this->document;
-        rapidjson::Document::AllocatorType& allocator = document.GetAllocator();
-
-        for (auto it = source.MemberBegin(); it != source.MemberEnd(); ++it) {
-            const char* key = it->name.GetString();
-            rapidjson::Value newKey(key, allocator);
-            rapidjson::Value newValue;
-            newValue.CopyFrom(it->value, allocator);
-            destination.AddMember(newKey, newValue, allocator);
-        }
-
-        // clear source content
-        source.SetNull();
-        return true;
-    }
-    std::string dump() {
-        rapidjson::StringBuffer buffer;
-        rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-        document.Accept(writer);
-        return buffer.GetString();
-    }
-    // read value
-    rapid_json_wrapper value(const char* key) const {
-        if (document.HasMember(key)  && document[key].IsObject()) {
-            rapidjson::Document subDoc;
-            subDoc.CopyFrom(document[key], subDoc.GetAllocator());
-            return rapid_json_wrapper(std::move(subDoc));
-        }
-        return rapid_json_wrapper();
-    }
-    float value(const char* key, const float& default_value) const {
-        if (document.HasMember(key)) {
-            const auto& value = document[key];
-            if (value.IsFloat()) return value.GetFloat();
-        }
-        return default_value;
-    }
-    int value(const char* key, const int& default_value) const {
-        if (document.HasMember(key)) {
-            const auto& value = document[key];
-            if (value.IsInt()) return value.GetInt();
-        }
-        return default_value;
-    }
-    bool value(const char* key, const bool& default_value) const {
-        if (document.HasMember(key)) {
-            const auto& value = document[key];
-            if (value.IsBool()) return value.GetBool();
-        }
-        return default_value;
-    }
-    std::string value(const char* key, const std::string& default_value) const {
-        if (document.HasMember(key)) {
-            const auto& value = document[key];
-            if (value.IsString()) return value.GetString();
-        }
-        return default_value;
-    }
-    std::vector<int64_t> value(const char* key, const std::vector<int64_t>& default_value) const {
-        if (document.HasMember(key)) {
-            const auto& value = document[key];
-            if (value.IsArray()) {
-                std::vector<int64_t> result;
-                for (auto& v : value.GetArray()) {
-                    result.push_back(v.GetInt64());
-                }
-                return result;
-            }
-        }
-        return default_value;
-    }
-    std::vector<int> value(const char* key, const std::vector<int>& default_value) const {
-        if (document.HasMember(key)) {
-            const auto& value = document[key];
-            if (value.IsArray()) {
-                std::vector<int> result;
-                for (auto& v : value.GetArray()) {
-                    if (v.IsInt()) {
-                        result.push_back(v.GetInt());
-                    }
-                }
-                return result;
-            }
-        }
-        return default_value;
-    }
-    std::vector<float> value(const char* key, const std::vector<float>& default_value) const {
-        if (document.HasMember(key)) {
-            const auto& value = document[key];
-            if (value.IsArray()) {
-                std::vector<float> result;
-                for (auto& v : value.GetArray()) {
-                    if (v.IsFloat()) {
-                        result.push_back(v.GetFloat());
-                    }
-                }
-                return result;
-            }
-        }
-        return default_value;
-    }
-    std::vector<std::string> value(const char* key, const std::vector<std::string>& default_value) const {
-        if (document.HasMember(key)) {
-            const auto& value = document[key];
-            if (value.IsArray()) {
-                std::vector<std::string> result;
-                for (auto& v : value.GetArray()) {
-                    if (v.IsString()) {
-                        result.push_back(v.GetString());
-                    }
-                }
-                return result;
-            }
-        }
-        return default_value;
-    }
-    std::string value(const char key[], const char default_value[]) const {
-        return value(key, std::string(default_value));
-    }
-};
 
 class LlmConfig {
 public:
     std::string base_dir_;
-    rapid_json_wrapper config_, mllm_config_, cur_config_;
+    ujson::json config_, mllm_config_, cur_config_;
     LlmConfig() {}
     LlmConfig(const LlmConfig& other)
         : base_dir_(other.base_dir_),
@@ -235,7 +60,9 @@ public:
         if (has_suffix(path, ".json")) {
             std::ifstream config_file(path);
             if (config_file.is_open()) {
-                config_ = rapid_json_wrapper::parse(config_file);
+                std::ostringstream ostr;
+                ostr << config_file.rdbuf();
+                config_ = ujson::json::parse(ostr.str());
             } else {
                 std::cerr << "Unable to open config file: " << path << std::endl;
                 std::cerr << "Error: " << std::strerror(errno) << " (errno: " << errno << ")" << std::endl;
@@ -249,11 +76,10 @@ public:
                     "llm_model": ")" + model_name + R"(",
                     "llm_weight": ")" + model_name + R"(.weight"
                 })";
-                config_ = rapid_json_wrapper::parse(json_str.c_str());
+                config_ = ujson::json::parse(json_str);
                 base_dir_ = base_dir(path);
             } else {
-                const char* json_cstr = "{}";
-                config_ = rapid_json_wrapper::parse(json_cstr);
+                config_ = ujson::json::parse("{}");
                 base_dir_ = path;
             }
         }
@@ -262,12 +88,14 @@ public:
         // load llm_config for model info
         std::ifstream llm_config_file(llm_config());
         if (llm_config_file.is_open()) {
-            auto llm_config_ = rapid_json_wrapper::parse(llm_config_file);
-            config_.merge_and_clear(llm_config_);
+            std::ostringstream ostr;
+            ostr << llm_config_file.rdbuf();
+            auto llm_config_ = ujson::json::parse(ostr.str());
+            config_.merge(llm_config_);
         } else {
             std::cerr << "Unable to open llm_config file: " << llm_config() << std::endl;
         }
-        mllm_config_ = config_.value("mllm");
+        mllm_config_ = config_.contains("mllm") ? config_["mllm"] : ujson::json();
     }
 
     // < model file config start
@@ -314,6 +142,10 @@ public:
     std::string audio_model() const {
         return base_dir_ + config_.value("audio_model", "audio.mnn");
     }
+
+    std::string context_file() const {
+        return base_dir_ + config_.value("context_file", "context.json");
+    }
     // model file config end >
 
     // < generate config start
@@ -329,8 +161,14 @@ public:
         return config_.value("reuse_kv", false);
     }
 
+    bool prompt_cache() const { return config_.value("prompt_cache", false); }
+
     bool all_logits() const {
         return config_.value("all_logits", false);
+    }
+
+    int timeout_ms() const {
+        return config_.value("timeout_ms", -1);
     }
     // generate config end >
 
@@ -357,10 +195,6 @@ public:
     std::string memory(bool mllm = false) const {
         if (mllm) return mllm_config_.value("memory", "low");
         return config_.value("memory", "low");
-    }
-
-    int kvcache_limit() const {
-        return config_.value("kvcache_limit", -1);
     }
     // backend config end >
 
@@ -402,6 +236,8 @@ public:
         return config_.value("talker_speaker", "Chelsie");
     }
 
+    bool interleaved() const { return config_.value("interleaved", false); }
+
     int dit_steps() const {
         return config_.value("dit_steps", 5);
     }
@@ -425,8 +261,44 @@ public:
         return config_.value("is_audio", false);
     }
 
+    std::string audio_type() const {
+        return config_.value("audio_type", "whisper");
+    }
+
+    bool is_mrope() const {
+        return config_.value("is_mrope", false);
+    }
+
     bool has_talker() const {
         return config_.value("has_talker", false);
+    }
+
+    bool has_deepstack() const {
+        return config_.value("has_deepstack", false);
+    }
+
+    bool has_ple() const {
+        return config_.find("ple_embed_file") != config_.end();
+    }
+
+    std::string ple_embed_file() const {
+        return base_dir_ + config_.value("ple_embed_file", "");
+    }
+
+    float ple_embed_scale() const {
+        return config_.value("ple_embed_scale", 1.0f);
+    }
+
+    int ple_embed_dim() const {
+        return config_.value("ple_embed_dim", 0);
+    }
+
+    std::vector<int64_t> ple_quant() const {
+        return config_.value("ple_quant", std::vector<int64_t>{});
+    }
+
+    float attn_scale() const {
+        return config_.value("attn_scale", 0.0f);
     }
 
     bool use_template() const {
@@ -439,6 +311,9 @@ public:
     bool use_cached_mmap() const {
         return config_.value("use_cached_mmap", true);
     }
+    int mmap_size() const {
+        return config_.value("mmap_size", 1024);
+    }
     int dynamic_option() const {
         return config_.value("dynamic_option", 0);
     }
@@ -447,6 +322,10 @@ public:
     }
     std::string tmp_path() const {
         return config_.value("tmp_path", "");
+    }
+
+    std::string prefix_cache_path() const {
+        return config_.value("prefix_cache_path", "prefixcache");
     }
 
     std::string system_prompt() const {
@@ -504,13 +383,62 @@ public:
     }
 
     std::vector<int64_t> tie_embeddings() const {
-        return config_.value("tie_embeddings", std::vector<int64_t>{});
+        // Legacy positional getter; only valid if the field is a list.
+        auto v = config_.at("tie_embeddings");
+        if (v.is_array()) {
+            return config_.value("tie_embeddings", std::vector<int64_t>{});
+        }
+        return {};
+    }
+
+    // Structured view for both legacy positional list and new dict format.
+    struct TieEmbeddingsInfo {
+        int64_t weight_offset = 0;
+        int64_t alpha_offset = 0;
+        int64_t alpha_size = 0;
+        int64_t quant_bit = 0;
+        int64_t quant_block = 0;
+        bool alpha_fp16 = false;
+        bool valid = false;
+    };
+
+    static TieEmbeddingsInfo parseTieEmbeddings(const std::vector<int64_t>& v) {
+        TieEmbeddingsInfo info;
+        if (v.size() >= 5) {
+            info.weight_offset = v[0];
+            info.alpha_offset = v[1];
+            info.alpha_size = v[2];
+            info.quant_bit = v[3];
+            info.quant_block = v[4];
+            if (v.size() >= 6)
+                info.alpha_fp16 = (v[5] != 0);
+            info.valid = true;
+        }
+        return info;
+    }
+
+    TieEmbeddingsInfo tie_embeddings_info() const {
+        if (!config_.contains("tie_embeddings"))
+            return {};
+        auto v = config_.at("tie_embeddings");
+        if (v.is_array()) {
+            return parseTieEmbeddings(tie_embeddings());
+        }
+        TieEmbeddingsInfo info;
+        info.weight_offset = v.value("weight_offset", int64_t(0));
+        info.alpha_offset = v.value("alpha_offset", int64_t(0));
+        info.alpha_size = v.value("alpha_size", int64_t(0));
+        info.quant_bit = v.value("quant_bit", int64_t(0));
+        info.quant_block = v.value("quant_block", int64_t(0));
+        info.alpha_fp16 = (v.value("alpha_dtype", std::string("fp32")) == "fp16");
+        info.valid = true;
+        return info;
     }
     // llm model config end >
 
     // < sampler config start
     std::string sampler_type() const {
-        return config_.value("sampler_type", "greedy");
+        return config_.value("sampler_type", "mixed");
     }
 
     std::vector<std::string> mixed_samplers() const {
@@ -521,19 +449,31 @@ public:
         return config_.value("temperature", 1.0f);
     }
 
+    // backward compatible: top_k > topK
     int topK() const {
+        int val = config_.value("top_k", -1);
+        if (val >= 0) return val;
         return config_.value("topK", 40);
     }
 
+    // backward compatible: top_p > topP
     float topP() const {
+        float val = config_.value("top_p", -1.0f);
+        if (val >= 0.0f) return val;
         return config_.value("topP", 0.9f);
     }
 
+    // backward compatible: min_p > minP
     float minP() const {
+        float val = config_.value("min_p", -1.0f);
+        if (val >= 0.0f) return val;
         return config_.value("minP", 0.1f);
     }
 
+    // backward compatible: tfs_z > tfsZ
     float tfsZ() const {
+        float val = config_.value("tfs_z", -1.0f);
+        if (val >= 0.0f) return val;
         return config_.value("tfsZ", 1.0f);
     }
 
@@ -541,8 +481,15 @@ public:
         return config_.value("typical", 1.0f);
     }
 
-    float penalty() const {
-        return config_.value("penalty", 0.0f);
+    // backward compatible: repetition_penalty > penalty
+    float repetition_penalty() const {
+        float val = config_.value("repetition_penalty", -1.0f);
+        if (val >= 0.0f) return val;
+        return config_.value("penalty", 1.0f);
+    }
+
+    float presence_penalty() const {
+        return config_.value("presence_penalty", 0.0f);
     }
 
     int ngram() const {
@@ -556,13 +503,37 @@ public:
     std::string penalty_sampler() const {
         return config_.value("penalty_sampler", "greedy");
     }
+
+    float frequency_penalty() const {
+        return config_.value("frequency_penalty", 0.0f);
+    }
+
+    int penalty_window() const {
+        return config_.value("penalty_window", 0);
+    }
+
+    std::unordered_map<int, float> logit_bias() const {
+        std::unordered_map<int, float> result;
+        if (config_.contains("logit_bias")) {
+            auto bias = config_["logit_bias"];
+            for (auto it = bias.begin(); it != bias.end(); ++it) {
+                int key = std::atoi(it.key().c_str());
+                result[key] = it.value().get<float>();
+            }
+        }
+        return result;
+    }
+
+    std::vector<int> banned_tokens() const {
+        return config_.value("banned_tokens", std::vector<int>{});
+    }
     // sampler config end >
 
     // < speculative decoding config start
 
     /**
      speculative decoding algrithm.
-     optional: "lookahead"、 ”mtp“、 "draftmodel"
+     optional: "lookahead"、 ”mtp“、 "draftmodel", "eagle"
      */
     std::string speculative_type() const {
         return config_.value("speculative_type", "");
@@ -570,7 +541,7 @@ public:
 
     // speculative draft length
     int draft_predict_length() const {
-        return config_.value("draft_predict_length", 4);
+        return config_.value("draft_predict_length", 3);
     }
     /**
      if speculative_type is set "lookahead",
@@ -622,6 +593,42 @@ public:
     std::string mtp_model() const {
         return base_dir_ + config_.value("mtp_model", "mtp.mnn");
     }
+    std::string eagle_model() const {
+        return base_dir_ + config_.value("eagle_model", "eagle.mnn");
+    }
+    std::string eagle_fc() const {
+        return base_dir_ + config_.value("eagle_fc", "eagle_fc.mnn");
+    }
+    std::string eagle_d2t() const {
+        return base_dir_ + config_.value("eagle_d2t", "eagle_d2t.mnn");
+    }
+    int eagle_depth() const {
+        return config_.value("eagle_depth", 3);
+    }
+    int eagle_topk() const {
+        return config_.value("eagle_topk", 1);
+    }
+    // ========= dflash config start ===============
+    std::string dflash_model() const {
+        return base_dir_ + config_.value("dflash_model", "dflash.mnn");
+    }
+    std::string dflash_fc() const {
+        return base_dir_ + config_.value("dflash_fc", "dflash_fc.mnn");
+    }
+    std::string dflash_lmhead() const {
+        return base_dir_ + config_.value("dflash_lmhead", "");
+    }
+    int dflash_block_size() const {
+        return config_.value("dflash_block_size", 16);
+    }
+    int dflash_mask_token_id() const {
+        return config_.value("dflash_mask_token_id", 0);
+    }
+    std::vector<int> dflash_target_layer_ids() const {
+        return config_.value("dflash_target_layer_ids", std::vector<int>{});
+    }
+    // ========= dflash config end ===============
+
     // speculative decoding config end >
 };
 } // Transformer

@@ -4,6 +4,10 @@
 package com.alibaba.mnnllm.android.debug
 
 import android.Manifest
+import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
@@ -14,6 +18,10 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.Switch
+import android.widget.Spinner
+import android.widget.ArrayAdapter
+import android.widget.FrameLayout
+import android.view.LayoutInflater
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -24,11 +32,19 @@ import com.alibaba.mnnllm.android.audio.AudioChunksPlayer
 import com.alibaba.mnnllm.android.utils.VoiceModelPathUtils
 import com.alibaba.mnnllm.android.utils.PreferenceUtils
 import com.alibaba.mnnllm.android.BuildConfig
+import com.alibaba.mnnllm.android.modelist.ModelListManager
+import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.taobao.meta.avatar.tts.TtsService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+data class TestCase(
+    val id: String,
+    val title: String,
+    val layoutResId: Int
+)
 
 class DebugActivity : AppCompatActivity() {
 
@@ -59,15 +75,24 @@ class DebugActivity : AppCompatActivity() {
 
     private lateinit var scrollView: ScrollView
     private lateinit var logTextView: TextView
-    private lateinit var asrTestButton: Button
+    private lateinit var testCaseSpinner: Spinner
+    private lateinit var testCaseContainer: FrameLayout
     private lateinit var clearLogButton: Button
-    private lateinit var closeDebugModeButton: Button
-    private lateinit var ttsTestButton: Button
-    private lateinit var ttsInputText: EditText
-    private lateinit var ttsProcessButton: Button
-    private lateinit var showModelInfoSwitch: Switch
-    private lateinit var allowNetworkSwitch: Switch
-    private lateinit var networkDelaySwitch: Switch
+    private lateinit var copyLogButton: Button
+    private lateinit var homeCrashlyticsNonFatalButton: Button
+    private lateinit var homeCrashlyticsFatalButton: Button
+
+    // Test case views - will be initialized when layouts are loaded
+    private var asrTestButton: Button? = null
+    private var ttsTestButton: Button? = null
+    private var ttsInputText: EditText? = null
+    private var ttsProcessButton: Button? = null
+    private var showModelInfoSwitch: Switch? = null
+    private var allowNetworkSwitch: Switch? = null
+    private var networkDelaySwitch: Switch? = null
+    private var closeDebugModeButton: Button? = null
+    private var testCrashlyticsNonFatalButton: Button? = null
+    private var testCrashlyticsFatalButton: Button? = null
 
     private var recognizeService: AsrService? = null
     private var isRecording = false
@@ -75,12 +100,21 @@ class DebugActivity : AppCompatActivity() {
     private var audioPlayer: AudioChunksPlayer? = null
     private var isTtsInitialized = false
 
+    private val testCases = listOf(
+        TestCase("asr", "ASR Test", R.layout.debug_test_asr),
+        TestCase("tts", "TTS Test", R.layout.debug_test_tts),
+        TestCase("scan", "Model Scan Test", R.layout.debug_test_scan),
+        TestCase("settings", "Debug Settings", R.layout.debug_test_settings)
+    )
+
+    private var scanModelButton: Button? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_debug)
 
         initViews()
-        setupClickListeners()
+        setupSpinner()
         loadDebugSettings()
         log("Debug Activity started")
     }
@@ -88,39 +122,112 @@ class DebugActivity : AppCompatActivity() {
     private fun initViews() {
         scrollView = findViewById(R.id.scrollView)
         logTextView = findViewById(R.id.logTextView)
-        asrTestButton = findViewById(R.id.asrTestButton)
+        testCaseSpinner = findViewById(R.id.testCaseSpinner)
+        testCaseContainer = findViewById(R.id.testCaseContainer)
         clearLogButton = findViewById(R.id.clearLogButton)
-        closeDebugModeButton = findViewById(R.id.closeDebugModeButton)
-        ttsTestButton = findViewById(R.id.ttsTestButton)
-        ttsInputText = findViewById(R.id.ttsInputText)
-        ttsProcessButton = findViewById(R.id.ttsProcessButton)
-        showModelInfoSwitch = findViewById(R.id.showModelInfoSwitch)
-        allowNetworkSwitch = findViewById(R.id.allowNetworkSwitch)
-        networkDelaySwitch = findViewById(R.id.networkDelaySwitch)
+        copyLogButton = findViewById(R.id.copyLogButton)
+        homeCrashlyticsNonFatalButton = findViewById(R.id.homeCrashlyticsNonFatalButton)
+        homeCrashlyticsFatalButton = findViewById(R.id.homeCrashlyticsFatalButton)
+        
         val titleTextView = findViewById<TextView>(R.id.titleTextView)
         val baseTitle = getString(R.string.debug_activity_title)
         val buildType = if (BuildConfig.DEBUG) "Debug" else "Release"
         titleTextView.text = "$baseTitle ($buildType)"
+
+        setupClickListeners()
     }
 
-    private fun setupClickListeners() {
-        asrTestButton.setOnClickListener {
+    private fun setupSpinner() {
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            testCases.map { it.title }
+        )
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        testCaseSpinner.adapter = adapter
+
+        testCaseSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                loadTestCaseLayout(testCases[position])
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {
+                // Do nothing
+            }
+        }
+
+        // Load first test case by default
+        if (testCases.isNotEmpty()) {
+            loadTestCaseLayout(testCases[0])
+        }
+    }
+
+    private fun loadTestCaseLayout(testCase: TestCase) {
+        log("Loading test case: ${testCase.title}")
+        
+        // Clear previous layout
+        testCaseContainer.removeAllViews()
+        
+        // Inflate new layout
+        val inflater = LayoutInflater.from(this)
+        val view = inflater.inflate(testCase.layoutResId, testCaseContainer, false)
+        testCaseContainer.addView(view)
+        
+        // Initialize views for this test case
+        when (testCase.id) {
+            "asr" -> initAsrViews(view)
+            "tts" -> initTtsViews(view)
+            "scan" -> initScanViews(view)
+            "settings" -> initSettingsViews(view)
+        }
+    }
+
+    private fun initScanViews(parentView: View) {
+        scanModelButton = parentView.findViewById(R.id.scanModelButton)
+        scanModelButton?.setOnClickListener {
+            startModelScanTest()
+        }
+    }
+
+    private fun startModelScanTest() {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                log("=== Calling ModelListManager.debugScanModels ===")
+                val result = ModelListManager.debugScanModels(this@DebugActivity)
+                
+                withContext(Dispatchers.Main) {
+                   logTextView.append(result)
+                   scrollView.post {
+                        scrollView.fullScroll(View.FOCUS_DOWN)
+                   }
+                }
+                
+                log("=== Scan Completed ===")
+                
+            } catch (e: Exception) {
+                log("Scan failed: ${e.message}")
+                Log.e(TAG, "Scan failed", e)
+            }
+        }
+    }
+
+    private fun initAsrViews(parentView: View) {
+        asrTestButton = parentView.findViewById(R.id.asrTestButton)
+        asrTestButton?.setOnClickListener {
             if (isRecording) {
                 stopAsrTest()
             } else {
                 startAsrTest()
             }
         }
+    }
 
-        clearLogButton.setOnClickListener {
-            clearLog()
-        }
+    private fun initTtsViews(parentView: View) {
+        ttsTestButton = parentView.findViewById(R.id.ttsTestButton)
+        ttsInputText = parentView.findViewById(R.id.ttsInputText)
+        ttsProcessButton = parentView.findViewById(R.id.ttsProcessButton)
 
-        closeDebugModeButton.setOnClickListener {
-            closeDebugMode()
-        }
-
-        ttsTestButton.setOnClickListener {
+        ttsTestButton?.setOnClickListener {
             if (isTtsInitialized) {
                 stopTtsTest()
             } else {
@@ -128,47 +235,83 @@ class DebugActivity : AppCompatActivity() {
             }
         }
 
-        ttsProcessButton.setOnClickListener {
+        ttsProcessButton?.setOnClickListener {
             processTtsText()
         }
+    }
 
-        showModelInfoSwitch.setOnCheckedChangeListener { _, isChecked ->
+    private fun initSettingsViews(parentView: View) {
+        showModelInfoSwitch = parentView.findViewById(R.id.showModelInfoSwitch)
+        allowNetworkSwitch = parentView.findViewById(R.id.allowNetworkSwitch)
+        networkDelaySwitch = parentView.findViewById(R.id.networkDelaySwitch)
+        closeDebugModeButton = parentView.findViewById(R.id.closeDebugModeButton)
+        testCrashlyticsNonFatalButton = parentView.findViewById(R.id.testCrashlyticsNonFatalButton)
+        testCrashlyticsFatalButton = parentView.findViewById(R.id.testCrashlyticsFatalButton)
+
+        // Load current settings
+        val isModelInfoEnabled = PreferenceUtils.getBoolean(this, KEY_SHOW_MODEL_INFO_ENABLED, false)
+        showModelInfoSwitch?.isChecked = isModelInfoEnabled
+
+        val isAllowNetwork = PreferenceUtils.getBoolean(this, KEY_ALLOW_NETWORK_MARKET_DATA, true)
+        allowNetworkSwitch?.isChecked = isAllowNetwork
+
+        val isNetworkDelayEnabled = PreferenceUtils.getBoolean(this, KEY_ENABLE_NETWORK_DELAY, false)
+        networkDelaySwitch?.isChecked = isNetworkDelayEnabled
+
+        // Setup listeners
+        showModelInfoSwitch?.setOnCheckedChangeListener { _, isChecked ->
             PreferenceUtils.setBoolean(this, KEY_SHOW_MODEL_INFO_ENABLED, isChecked)
             log("Model info menu visibility: ${if (isChecked) "enabled" else "disabled"}")
         }
 
-        allowNetworkSwitch.setOnCheckedChangeListener { _, isChecked ->
+        allowNetworkSwitch?.setOnCheckedChangeListener { _, isChecked ->
             PreferenceUtils.setBoolean(this, KEY_ALLOW_NETWORK_MARKET_DATA, isChecked)
             log("Allow network to fetch model market data: ${if (isChecked) "enabled" else "disabled"}")
         }
 
-        networkDelaySwitch.setOnCheckedChangeListener { _, isChecked ->
+        networkDelaySwitch?.setOnCheckedChangeListener { _, isChecked ->
             PreferenceUtils.setBoolean(this, KEY_ENABLE_NETWORK_DELAY, isChecked)
             log("Network delay simulation: ${if (isChecked) "enabled" else "disabled"}")
+        }
+
+        closeDebugModeButton?.setOnClickListener {
+            closeDebugMode()
+        }
+
+        testCrashlyticsNonFatalButton?.setOnClickListener {
+            testCrashlyticsNonFatal()
+        }
+
+        testCrashlyticsFatalButton?.setOnClickListener {
+            confirmAndCrashForCrashlytics()
+        }
+    }
+
+    private fun setupClickListeners() {
+        clearLogButton.setOnClickListener {
+            clearLog()
+        }
+        copyLogButton.setOnClickListener {
+            copyLog()
+        }
+        homeCrashlyticsNonFatalButton.setOnClickListener {
+            testCrashlyticsNonFatal()
+        }
+        homeCrashlyticsFatalButton.setOnClickListener {
+            confirmAndCrashForCrashlytics()
         }
     }
 
     private fun loadDebugSettings() {
-        val isModelInfoEnabled = PreferenceUtils.getBoolean(this, KEY_SHOW_MODEL_INFO_ENABLED, false)
-        showModelInfoSwitch.isChecked = isModelInfoEnabled
-        log("Loaded debug settings - Model info menu: ${if (isModelInfoEnabled) "enabled" else "disabled"}")
-
-        val isAllowNetwork = PreferenceUtils.getBoolean(this, KEY_ALLOW_NETWORK_MARKET_DATA, true)
-        allowNetworkSwitch.isChecked = isAllowNetwork
-        log("Loaded debug settings - Allow network: ${if (isAllowNetwork) "enabled" else "disabled"}")
-
-        val isNetworkDelayEnabled = PreferenceUtils.getBoolean(this, KEY_ENABLE_NETWORK_DELAY, false)
-        networkDelaySwitch.isChecked = isNetworkDelayEnabled
-        log("Loaded debug settings - Network delay: ${if (isNetworkDelayEnabled) "enabled" else "disabled"}")
+        log("Debug settings loaded")
     }
-
 
 
     private fun startAsrTest() {
         if (checkRecordAudioPermission()) {
             CoroutineScope(Dispatchers.Main).launch {
                 try {
-                log("Starting ASR test...")
+                    log("Starting ASR test...")
                     val modelDir = "/data/local/tmp/asr_models/sherpa-mnn-streaming-zipformer-bilingual-zh-en-2023-02-20"
                     log("Using ASR model path: $modelDir")
                     recognizeService = AsrService(this@DebugActivity, modelDir)
@@ -184,7 +327,7 @@ class DebugActivity : AppCompatActivity() {
 
                     recognizeService?.startRecord()
                     isRecording = true
-                    asrTestButton.text = getString(R.string.stop_asr_test)
+                    asrTestButton?.text = getString(R.string.stop_asr_test)
                     log("ASR test started successfully")
                     
                 } catch (e: Exception) {
@@ -200,7 +343,7 @@ class DebugActivity : AppCompatActivity() {
             recognizeService?.stopRecord()
             recognizeService = null
             isRecording = false
-            asrTestButton.text = getString(R.string.start_asr_test)
+            asrTestButton?.text = getString(R.string.start_asr_test)
             log("ASR test stopped")
         } catch (e: Exception) {
             log("Error stopping ASR test: ${e.message}")
@@ -270,6 +413,13 @@ class DebugActivity : AppCompatActivity() {
         log("Log cleared")
     }
 
+    private fun copyLog() {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText("Debug Log", logTextView.text)
+        clipboard.setPrimaryClip(clip)
+        Toast.makeText(this, R.string.log_copied_to_clipboard, Toast.LENGTH_SHORT).show()
+    }
+
     private fun closeDebugMode() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(R.string.close_debug_mode_title)
@@ -289,6 +439,35 @@ class DebugActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun testCrashlyticsNonFatal() {
+        val crashlytics = FirebaseCrashlytics.getInstance()
+        crashlytics.log("Debug panel non-fatal test")
+        crashlytics.setCustomKey("debug_mode_activated", true)
+        crashlytics.setCustomKey("build_type", if (BuildConfig.DEBUG) "debug" else "release")
+        crashlytics.setCustomKey("application_id", BuildConfig.APPLICATION_ID)
+        crashlytics.recordException(
+            IllegalStateException("Debug non-fatal Crashlytics test ${System.currentTimeMillis()}")
+        )
+        log("Crashlytics non-fatal event sent. Check Firebase console in a few minutes.")
+        Toast.makeText(this, R.string.debug_test_crashlytics_non_fatal_sent, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun confirmAndCrashForCrashlytics() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(R.string.debug_test_crashlytics_fatal_confirm_title)
+            .setMessage(R.string.debug_test_crashlytics_fatal_confirm_message)
+            .setPositiveButton(R.string.debug_test_crashlytics_fatal_confirm_action) { _, _ ->
+                val crashlytics = FirebaseCrashlytics.getInstance()
+                crashlytics.log("Debug panel fatal test")
+                crashlytics.setCustomKey("debug_mode_activated", true)
+                crashlytics.setCustomKey("build_type", if (BuildConfig.DEBUG) "debug" else "release")
+                crashlytics.setCustomKey("application_id", BuildConfig.APPLICATION_ID)
+                throw RuntimeException("Debug fatal Crashlytics test ${System.currentTimeMillis()}")
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun startTtsTest() {
         CoroutineScope(Dispatchers.Main).launch {
             try {
@@ -299,17 +478,23 @@ class DebugActivity : AppCompatActivity() {
                 withContext(Dispatchers.IO) {
                     try {
                         val modelDir = VoiceModelPathUtils.getTtsModelPath(this@DebugActivity)
+                        val sampleRate = VoiceModelPathUtils.getTtsSampleRate(modelDir)
+                        val language = VoiceModelPathUtils.getTtsLanguage(this@DebugActivity)
                         log("Using TTS model path: $modelDir")
+                        log("Using TTS sample rate: $sampleRate")
+                        log("Using TTS language: $language")
+                        audioPlayer?.sampleRate = sampleRate
+                        ttsService?.setLanguage(language)
                         log("Initializing TTS with model directory: $modelDir")
                         val initResult = ttsService?.init(modelDir)
                         if (initResult == true) {
                             log("TTS Service initialized successfully")
                             isTtsInitialized = true
                             withContext(Dispatchers.Main) {
-                                ttsTestButton.text = getString(R.string.stop_tts_test)
-                                ttsInputText.isEnabled = true
-                                ttsProcessButton.isEnabled = true
-                                ttsInputText.setText("Hello, this is a test of the TTS system.")
+                                ttsTestButton?.text = getString(R.string.stop_tts_test)
+                                ttsInputText?.isEnabled = true
+                                ttsProcessButton?.isEnabled = true
+                                ttsInputText?.setText("Hello, this is a test of the TTS system.")
                             }
                             log("TTS test started successfully")
                         } else {
@@ -336,9 +521,9 @@ class DebugActivity : AppCompatActivity() {
             ttsService = null
             audioPlayer = null
             isTtsInitialized = false
-            ttsTestButton.text = getString(R.string.start_tts_test)
-            ttsInputText.isEnabled = false
-            ttsProcessButton.isEnabled = false
+            ttsTestButton?.text = getString(R.string.start_tts_test)
+            ttsInputText?.isEnabled = false
+            ttsProcessButton?.isEnabled = false
             log("TTS test stopped")
         } catch (e: Exception) {
             log("Error stopping TTS test: ${e.message}")
@@ -347,7 +532,7 @@ class DebugActivity : AppCompatActivity() {
     }
 
     private fun processTtsText() {
-        val text = ttsInputText.text.toString().trim()
+        val text = ttsInputText?.text.toString().trim()
         if (text.isEmpty()) {
             log("Please enter some text")
             return
@@ -382,8 +567,10 @@ class DebugActivity : AppCompatActivity() {
                     // Initialize audio player if needed
                     if (audioPlayer == null) {
                         audioPlayer = AudioChunksPlayer()
-                        audioPlayer!!.sampleRate = 44100
                     }
+                    audioPlayer!!.sampleRate = VoiceModelPathUtils.getTtsSampleRate(
+                        VoiceModelPathUtils.getTtsModelPath(this@DebugActivity)
+                    )
                     audioPlayer?.start()
 
                     // Play the audio

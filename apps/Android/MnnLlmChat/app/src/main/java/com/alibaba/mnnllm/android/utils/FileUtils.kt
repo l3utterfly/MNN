@@ -63,6 +63,10 @@ object FileUtils {
         return generateDestFilePathKindOf(context, sessionId, "image", "jpg")
     }
 
+    fun generateDestVideoFilePath(context: Context, sessionId: String): String {
+        return generateDestFilePathKindOf(context, sessionId, "video", "mp4")
+    }
+
     private fun generateDestFilePathKindOf(
         context: Context,
         sessionId: String,
@@ -193,6 +197,39 @@ object FileUtils {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to get size for ${file.path}", e)
             0L
+        }
+    }
+
+    fun saveImageToGallery(context: Context, imageFile: File): Boolean {
+        val fileName = "MNN_Diffusion_${System.currentTimeMillis()}.jpg"
+        val contentValues = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/MNN-Chat")
+                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+        }
+
+        val resolver = context.contentResolver
+        val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues) ?: return false
+
+        try {
+            resolver.openOutputStream(uri).use { outputStream ->
+                if (outputStream == null) return false
+                java.nio.file.Files.copy(imageFile.toPath(), outputStream)
+            }
+
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                contentValues.clear()
+                contentValues.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, contentValues, null, null)
+            }
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save image to gallery", e)
+            resolver.delete(uri, null, null)
+            return false
         }
     }
 }

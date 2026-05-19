@@ -21,11 +21,55 @@ import com.alibaba.mnnllm.android.model.Modality
 import com.alibaba.mnnllm.android.model.ModelVendors
 import com.alibaba.mnnllm.android.modelsettings.DropDownMenuHelper
 import com.alibaba.mnnllm.android.utils.Searchable
+import com.alibaba.mnnllm.android.utils.LargeModelConfirmationDialog
+import com.alibaba.mnnllm.android.modelist.ModelListManager
+import kotlin.math.max
 
 class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
     
     companion object {
         private const val TAG = "ModelListFragment"
+
+        internal fun calculateBottomClearancePadding(
+            basePaddingBottom: Int,
+            recyclerBottom: Int,
+            bottomNavigationTop: Int
+        ): Int {
+            return basePaddingBottom + max(0, recyclerBottom - bottomNavigationTop)
+        }
+
+        internal fun applyBottomClearanceForViews(
+            recyclerView: RecyclerView,
+            bottomNavigation: View,
+            basePaddingBottom: Int
+        ) {
+            if (recyclerView.height == 0 || bottomNavigation.height == 0) {
+                return
+            }
+
+            val recyclerLocation = IntArray(2)
+            val bottomNavigationLocation = IntArray(2)
+            recyclerView.getLocationInWindow(recyclerLocation)
+            bottomNavigation.getLocationInWindow(bottomNavigationLocation)
+
+            val recyclerBottom = recyclerLocation[1] + recyclerView.height
+            val bottomNavigationTop = bottomNavigationLocation[1]
+            val targetPaddingBottom = calculateBottomClearancePadding(
+                basePaddingBottom = basePaddingBottom,
+                recyclerBottom = recyclerBottom,
+                bottomNavigationTop = bottomNavigationTop
+            )
+            if (recyclerView.paddingBottom == targetPaddingBottom) {
+                return
+            }
+
+            recyclerView.setPadding(
+                recyclerView.paddingLeft,
+                recyclerView.paddingTop,
+                recyclerView.paddingRight,
+                targetPaddingBottom
+            )
+        }
     }
     private lateinit var modelListRecyclerView: RecyclerView
     private lateinit var modelListLoadingView: View
@@ -40,10 +84,15 @@ class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
     private val modelItemList: MutableList<ModelItemWrapper> = mutableListOf()
 
     private var modelListErrorText: TextView? = null
+    private var loadingMessageText: TextView? = null
 
     private var filterDownloaded = false
     private var filterQuery = ""
-    
+    private var baseRecyclerPaddingBottom = 0
+
+    /** Notified when downloaded models change so ModelMarketFragment can refresh. Set by MainFragmentManager. */
+    var onModelListChangeListener: OnModelListChangeListener? = null
+
     // Save current search query state  
     private var currentSearchQuery: String = ""
     
@@ -74,9 +123,8 @@ class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
         modelListErrorView = view.findViewById(R.id.model_list_failed_view)
         modelListEmptyView = view.findViewById(R.id.model_list_empty_view)
         modelListErrorText = modelListErrorView.findViewById(R.id.tv_error_text)
-        modelListErrorView.setOnClickListener {
-            modelListPresenter!!.load()
-        }
+        loadingMessageText = modelListLoadingView.findViewById(R.id.tv_loading_message)
+        baseRecyclerPaddingBottom = modelListRecyclerView.paddingBottom
         modelListRecyclerView.setLayoutManager(
             LinearLayoutManager(
                 context,
@@ -102,6 +150,13 @@ class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
         filterDownloaded = isFilterDownloaded(context)
         adapter!!.setFilter(filterQuery)
         adapter!!.filterDownloadState(filterDownloaded.toString())
+
+        // Show loading view initially to prevent flash of empty list
+        modelListLoadingView.visibility = View.VISIBLE
+        modelListRecyclerView.visibility = View.GONE
+        modelListErrorView.visibility = View.GONE
+        modelListEmptyView.visibility = View.GONE
+        
         modelListPresenter!!.onCreate()
         return view
     }
@@ -113,13 +168,13 @@ class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
         try {
             // Check if we're at the top of the list before making changes
             val layoutManager = modelListRecyclerView.layoutManager as? LinearLayoutManager
-            val shouldScrollToTop = layoutManager?.let { 
+            val shouldScrollToTop = layoutManager?.let {
                 val firstVisiblePosition = it.findFirstVisibleItemPosition()
                 val firstCompletelyVisiblePosition = it.findFirstCompletelyVisibleItemPosition()
                 // Consider "at top" if first item is visible and we're unpinning (item will move down)
                 (firstVisiblePosition <= 2 || firstCompletelyVisiblePosition <= 1) && !isPinned
             } ?: false
-            
+
             if (isPinned) {
                 PreferenceUtils.pinModel(requireContext(), modelId)
                 Toast.makeText(requireContext(), getString(R.string.model_pinned), Toast.LENGTH_SHORT).show()
@@ -127,17 +182,17 @@ class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
                 PreferenceUtils.unpinModel(requireContext(), modelId)
                 Toast.makeText(requireContext(), getString(R.string.model_unpinned), Toast.LENGTH_SHORT).show()
             }
-            
-            // Refresh the list with smart scroll handling
-            modelListPresenter?.refreshList()
-            
+
+            // Notify presenter to refresh the list with new pin state
+            modelListPresenter?.handlePinStateChange(isPinned)
+
             // If we were at the top and unpinned an item, scroll back to top after update
             if (shouldScrollToTop) {
                 modelListRecyclerView.post {
                     modelListRecyclerView.scrollToPosition(0)
                 }
             }
-            
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to toggle pin state for model: $modelId", e)
             Toast.makeText(requireContext(), getString(R.string.pin_toggle_failed), Toast.LENGTH_SHORT).show()
@@ -147,6 +202,22 @@ class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         setupCustomToolbar()
+        view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            applyBottomNavigationClearance()
+        }
+        view.post {
+            applyBottomNavigationClearance()
+        }
+    }
+
+    private fun applyBottomNavigationClearance() {
+        val activity = activity ?: return
+        val bottomNavigation = activity.findViewById<View>(R.id.bottom_navigation) ?: return
+        applyBottomClearanceForViews(
+            recyclerView = modelListRecyclerView,
+            bottomNavigation = bottomNavigation,
+            basePaddingBottom = baseRecyclerPaddingBottom
+        )
     }
 
     private fun setupCustomToolbar() {
@@ -249,18 +320,13 @@ class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
             removeCustomToolbar()
         } else {
             setupCustomToolbar()
-            // Refresh the list to update sorting based on recent chats
-            modelListPresenter?.refreshList()
-            // Restore search state if there was an active search
             restoreSearchStateIfNeeded()
         }
     }
     
     override fun onResume() {
         super.onResume()
-        // Refresh the list when fragment resumes to update sorting
-        modelListPresenter?.refreshList()
-        // Also restore search state on resume (for initial load)
+
         restoreSearchStateIfNeeded()
     }
     
@@ -275,6 +341,14 @@ class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
                 mainActivity?.setSearchQuery(currentSearchQuery)
             }, 100)
         }
+    }
+
+    /**
+     * Refresh filter state from PreferenceUtils after menu toggle. Called by MainActivity.
+     */
+    fun refreshFilterDownloadedState() {
+        filterDownloaded = PreferenceUtils.isFilterDownloaded(requireContext())
+        adapter?.filterDownloadState(filterDownloaded.toString())
     }
 
     override fun onDestroyView() {
@@ -293,6 +367,10 @@ class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
         if (adapter!!.itemCount > 0) {
             modelListRecyclerView.visibility = View.VISIBLE
             modelListEmptyView.visibility = View.GONE
+            // Force rebind after layout so tags display with correct locale on Chinese devices
+            view?.post {
+                adapter?.notifyItemRangeChanged(0, adapter?.itemCount ?: 0)
+            }
         } else {
             modelListRecyclerView.visibility = View.GONE
             modelListEmptyView.visibility = View.VISIBLE
@@ -318,7 +396,38 @@ class ModelListFragment : Fragment(), ModelListContract.View, Searchable {
         modelListRecyclerView.visibility = View.GONE
     }
 
+    override fun onBuiltinModelsCopyProgress(current: Int, total: Int, message: String) {
+        requireActivity().runOnUiThread {
+            loadingMessageText?.text = message
+        }
+    }
+
+    override fun onModelDeletedFromList() {
+        onModelListChangeListener?.onDownloadedModelsChanged()
+    }
+
     override fun runModel(destPath:String?, modelId: String?) {
-        ChatRouter.startRun(requireContext(), modelId!!, destPath, null)
+        // Check if model is larger than 7GB before running
+        val modelItem = ModelListManager.getModelIdModelMap()[modelId]
+        val modelMarketItem = (modelItem?.modelMarketItem as? com.alibaba.mnnllm.android.modelmarket.ModelMarketItem)
+
+        if (modelMarketItem != null && modelMarketItem.sizeB > 10.0) {
+            // Show confirmation dialog for large models
+            LargeModelConfirmationDialog.show(
+                fragment = this,
+                modelName = modelMarketItem.modelName,
+                modelSize = modelMarketItem.sizeB,
+                onConfirm = {
+                    // User confirmed, proceed with running the model
+                    ChatRouter.startRun(requireContext(), modelId!!, destPath, null)
+                },
+                onCancel = {
+                    // User cancelled, do nothing
+                }
+            )
+        } else {
+            // Model is not large or size info not available, run directly
+            ChatRouter.startRun(requireContext(), modelId!!, destPath, null)
+        }
     }
 }

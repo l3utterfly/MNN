@@ -13,6 +13,13 @@ namespace MNN {
 namespace QNN {
 #ifdef ENABLE_QNN_ONLINE_FINALIZE
 
+static bool needChangeInputOrder(const std::string& binaryTypeName) {
+    std::set<std::string> NoneedChangeSet = {"ElementWiseAdd",     "ElementWiseMultiply", "ElementWiseMinimum",
+                                             "ElementWiseMaximum", "ElementWiseOr",       "ElementWiseEqual",
+                                             "ElementWiseNotEqual"};
+    return NoneedChangeSet.find(binaryTypeName) == NoneedChangeSet.end();
+}
+
 ErrorCode QNNBinary::onEncode(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
     int dim0 = inputs[0]->dimensions();
     int dim1 = inputs[1]->dimensions();
@@ -24,8 +31,9 @@ ErrorCode QNNBinary::onEncode(const std::vector<Tensor *> &inputs, const std::ve
     if(dim0 != dim1 && minDim == 0) {
         return this->onEncodeScalarOptimize(inputs, outputs, fullIndex);
     }
-
-    if (dim0 != dim1 && TensorUtils::getDimType(inputs[0]) != gQnnTensorDimType) {
+    
+    if (dim0 != dim1 && TensorUtils::getDimType(inputs[0]) != TensorUtils::getDimType(inputs[1])) {
+        fullIndex = TensorUtils::getDimType(inputs[0]) != TensorUtils::getDimType(outputs[0]) ? 1 : 0;
         return this->onEncodeBroadcast(inputs, outputs, fullIndex);
     }
 
@@ -42,10 +50,11 @@ ErrorCode QNNBinary::onEncodeScalarOptimize(const std::vector<Tensor *> &inputs,
 
     std::vector<uint32_t> dim(inputs[fullIndex]->dimensions(), 1);
 
-    this->createStageTensor("stage_0", dataType, dim); // mTempTensorWrappers[0]
-    this->createStageTensor("stage_1", dataType, shape); // mTempTensorWrappers[1]
+    this->createStageTensor("stage_0", dataType, dim, inputs[fullIndex]); // mTempTensorWrappers[0]
+    this->createStageTensor("stage_1", dataType, shape, inputs[fullIndex]); // mTempTensorWrappers[1]
 
-    this->createParamTensor("multiples", QNN_DATATYPE_UINT_32, {(uint32_t)shape.size()}, shape.data()); // mParamTensorWrappers[0]
+    this->createParamTensor("multiples", QNN_DATATYPE_UINT_32, {(uint32_t)shape.size()},
+                            shape.data()); // mParamTensorWrappers[0]
 
     // Reshape
     {
@@ -75,13 +84,24 @@ ErrorCode QNNBinary::onEncodeScalarOptimize(const std::vector<Tensor *> &inputs,
     }
 
     // Binary
+    // Ensure correct input order for non-commutative operations (Sub, Div, Pow, etc.)
+    // input0Tensor corresponds to original inputs[0], input1Tensor corresponds to original inputs[1]
+    const auto& input0Tensor = (fullIndex == 0) ? *(mBackend->getNativeTensor(inputs[fullIndex]))
+                                                : *(mTempTensorWrappers[1]->getNativeTensor());
+    const auto& input1Tensor = (fullIndex == 0) ? *(mTempTensorWrappers[1]->getNativeTensor())
+                                                : *(mBackend->getNativeTensor(inputs[fullIndex]));
     {
         CLEAR_BEFORE_ADDING_NODE;
 
         mNodeType = mBinaryTypeName;
 
-        mInputs.push_back(*(mBackend->getNativeTensor(inputs[fullIndex]))); // full input
-        mInputs.push_back(*(mTempTensorWrappers[1]->getNativeTensor())); // stage 1
+        if (needChangeInputOrder(mBinaryTypeName)) {
+            mInputs.push_back(input0Tensor);
+            mInputs.push_back(input1Tensor);
+        } else {
+            mInputs.push_back(*(mBackend->getNativeTensor(inputs[fullIndex]))); // full input
+            mInputs.push_back(*(mTempTensorWrappers[1]->getNativeTensor()));    // stage 1
+        }
         mOutputs.push_back(*(mBackend->getNativeTensor(outputs[0])));
 
         mBackend->addNodeToGraph(mOpConfigVersion, mNodeName.c_str(), mPackageName.c_str(), mNodeType.c_str(), mParams, mInputs, mOutputs);
@@ -94,50 +114,56 @@ ErrorCode QNNBinary::onEncodeBroadcast(const std::vector<Tensor *> &inputs, cons
     int idleIndex = 1 - fullIndex;
     int fullDim = inputs[fullIndex]->dimensions();
     int idleDim = inputs[idleIndex]->dimensions();
-    std::vector<uint32_t> idleNHWCShape = getNHWCShape(inputs[idleIndex]);
     int offset = fullDim - idleDim;
+    std::vector<uint32_t> idleShape = getNHWCShape(inputs[idleIndex]);
+    std::vector<uint32_t> permData(fullDim);
     Qnn_DataType_t dataType = mBackend->getNativeTensor(inputs[fullIndex])->v1.dataType;
-
-    std::vector<uint32_t> order(idleDim);
-    for (int i = 0; i < order.size(); i++) {
-        order[i] = (uint32_t) getNHWCAxis(getNCHWAxis(i, idleDim, Tensor::TENSORFLOW) + offset, fullDim, Tensor::CAFFE);
+    if(TensorUtils::getDescribe(inputs[idleIndex])->dimensionFormat == MNN_DATA_FORMAT_NCHW){
+        permData[0] = 0;
+        permData[fullDim - 1] = 1;
+        for(int i = 1; i < fullDim - 1; ++i){
+            permData[i] = i + 1;
+        }
+    } else{
+        permData[0] = 0;
+        permData[1] = fullDim - 1;
+        for(int i = 2; i < fullDim; ++i){
+            permData[i] = i - 1;
+        }
     }
-
-    std::vector<uint32_t> permData(idleDim);
-    for (int i = 0; i < idleDim; i++) {permData[i] = i;}
-    std::sort(permData.begin(), permData.end(), [&order](uint32_t a, uint32_t b) {return order[a] < order[b];});
-    this->createParamTensor("perm", QNN_DATATYPE_UINT_32, {(uint32_t) idleDim}, (void *) permData.data()); // mParamTensorWrappers[0]
-
-    std::vector<uint32_t> shapeStagePerm(idleDim);
-    for (int i = 0; i < idleDim; i++) {shapeStagePerm[i] = idleNHWCShape[permData[i]];}
-    this->createStageTensor("stage_perm", dataType, shapeStagePerm); // mTempTensorWrappers[0]
-
+    this->createParamTensor("perm", QNN_DATATYPE_UINT_32, {(uint32_t) fullDim}, (void *) permData.data()); // mParamTensorWrappers[0]
     std::vector<uint32_t> shapeStageReshape(fullDim, 1);
-    for (int i = 0; i < idleDim; i++) {shapeStageReshape[order[i]] = idleNHWCShape[i];}
-    this->createStageTensor("stage_reshape", dataType, shapeStageReshape); // mTempTensorWrappers[1]
-
-    // Permute.
-    this->addNodeCommonPermute("Permute",
-                               *(mBackend->getNativeTensor(inputs[idleIndex])),
-                               *(mParamTensorWrappers[0]->getNativeParam()),
-                               *(mTempTensorWrappers[0]->getNativeTensor()));
-
+    for (int i = 0; i < idleDim; i++) {shapeStageReshape[i + offset] = idleShape[i];}
+    this->createStageTensor("stage_reshape", dataType, shapeStageReshape, inputs[idleIndex]); // mTempTensorWrappers[0]
+    
+    std::vector<uint32_t> shapeStagePerm(fullDim);
+    for (int i = 0; i < fullDim; i++) {shapeStagePerm[i] = shapeStageReshape[permData[i]];}
+    this->createStageTensor("stage_perm", dataType, shapeStagePerm, inputs[idleIndex]); // mTempTensorWrappers[1]
     // Reshape.
     this->addNodeCommonReshape("Reshape",
+                               *(mBackend->getNativeTensor(inputs[idleIndex])),
+                               *(mTempTensorWrappers[0]->getNativeTensor()));
+    
+    // Permute.
+    this->addNodeCommonPermute("Permute",
                                *(mTempTensorWrappers[0]->getNativeTensor()),
+                               *(mParamTensorWrappers[0]->getNativeParam()),
                                *(mTempTensorWrappers[1]->getNativeTensor()));
-
     // Binary broadcast.
+    // Ensure correct input order for non-commutative operations (Sub, Div, Pow, etc.)
     {
         CLEAR_BEFORE_ADDING_NODE;
-
         mNodeType = mBinaryTypeName;
-        mInputs.push_back(*(mBackend->getNativeTensor(inputs[fullIndex])));
-        mInputs.push_back(*(mTempTensorWrappers[1]->getNativeTensor()));
+        if (needChangeInputOrder(mBinaryTypeName) && fullIndex == 1) {
+            mInputs.push_back(*(mTempTensorWrappers[1]->getNativeTensor()));
+            mInputs.push_back(*(mBackend->getNativeTensor(inputs[fullIndex])));
+        } else {
+            mInputs.push_back(*(mBackend->getNativeTensor(inputs[fullIndex])));
+            mInputs.push_back(*(mTempTensorWrappers[1]->getNativeTensor()));
+        }
         mOutputs.push_back(*(mBackend->getNativeTensor(outputs[0])));
         mBackend->addNodeToGraph(mOpConfigVersion, mNodeName.c_str(), mPackageName.c_str(), mNodeType.c_str(), mParams, mInputs, mOutputs);
     }
-
     return NO_ERROR;
 }
 
@@ -147,34 +173,24 @@ public:
                                 Backend* backend) const override {
         MNN_ASSERT(inputs.size() == 2 && outputs.size() == 1);
 
-        std::map<BinaryOpOperation, std::string> binaryMap {
-            {BinaryOpOperation_ADD, "ElementWiseAdd"},
-            {BinaryOpOperation_SUB, "ElementWiseSubtract"},
-            {BinaryOpOperation_MUL, "ElementWiseMultiply"},
-            {BinaryOpOperation_DIV, "ElementWiseDivide"},
-            {BinaryOpOperation_POW, "ElementWisePower"},
-            {BinaryOpOperation_REALDIV, "ElementWiseDivide"},
-            {BinaryOpOperation_MINIMUM, "ElementWiseMinimum"},
-            {BinaryOpOperation_MAXIMUM, "ElementWiseMaximum"}
-            // {BinaryOpOperation_GREATER, ""},
-            // {BinaryOpOperation_GREATER_EQUAL, ""},
-            // {BinaryOpOperation_LESS, ""},
-            // {BinaryOpOperation_FLOORDIV, ""},
-            // {BinaryOpOperation_SquaredDifference, ""},
-            // {BinaryOpOperation_LESS_EQUAL, ""},
-            // {BinaryOpOperation_FLOORMOD, ""},
-            // {BinaryOpOperation_EQUAL, ""},
-            // {BinaryOpOperation_MOD, ""},
-            // {BinaryOpOperation_ATAN2, ""},
-            // {BinaryOpOperation_LOGICALOR, ""},
-            // {BinaryOpOperation_NOTEQUAL, ""},
-            // {BinaryOpOperation_BITWISE_AND, ""},
-            // {BinaryOpOperation_BITWISE_OR, ""},
-            // {BinaryOpOperation_BITWISE_XOR, ""},
-            // {BinaryOpOperation_LOGICALXOR, ""},
-            // {BinaryOpOperation_LEFTSHIFT, ""},
-            // {BinaryOpOperation_RIGHTSHIFT, ""}
-        };
+        std::map<BinaryOpOperation, std::string> binaryMap{{BinaryOpOperation_ADD, "ElementWiseAdd"},
+                                                           {BinaryOpOperation_SUB, "ElementWiseSubtract"},
+                                                           {BinaryOpOperation_MUL, "ElementWiseMultiply"},
+                                                           {BinaryOpOperation_DIV, "ElementWiseDivide"},
+                                                           {BinaryOpOperation_POW, "ElementWisePower"},
+                                                           {BinaryOpOperation_REALDIV, "ElementWiseDivide"},
+                                                           {BinaryOpOperation_MINIMUM, "ElementWiseMinimum"},
+                                                           {BinaryOpOperation_MAXIMUM, "ElementWiseMaximum"},
+                                                           {BinaryOpOperation_GREATER, "ElementWiseGreater"},
+                                                           {BinaryOpOperation_GREATER_EQUAL, "ElementWiseGreaterEqual"},
+                                                           {BinaryOpOperation_LESS, "ElementWiseLess"},
+                                                           {BinaryOpOperation_FLOORDIV, "ElementWiseFloorDiv"},
+                                                           {BinaryOpOperation_LESS_EQUAL, "ElementWiseLessEqual"},
+                                                           {BinaryOpOperation_FLOORMOD, "ElementWiseFmod"},
+                                                           {BinaryOpOperation_EQUAL, "ElementWiseEqual"},
+                                                           {BinaryOpOperation_MOD, "ElementWiseMod"},
+                                                           {BinaryOpOperation_LOGICALOR, "ElementWiseOr"},
+                                                           {BinaryOpOperation_NOTEQUAL, "ElementWiseNotEqual"}};
 
         std::map<EltwiseType, std::string> eltwiseMap {
             {EltwiseType_PROD, "ElementWiseMultiply"},

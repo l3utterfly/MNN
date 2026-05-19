@@ -72,17 +72,22 @@ private:
 
 public:
     void addNodeToGraph(Qnn_OpConfigVersion_t version, const char* nodeName, const char* packageName, const char* nodeType, std::vector<Qnn_Param_t> & params, std::vector<Qnn_Tensor_t> & inputs, std::vector<Qnn_Tensor_t> & outputs);
-    void addStaticTensorToGraph(Qnn_Tensor_t * staticTensor);
-    void addStageTensorToGraph(Qnn_Tensor_t * stageTensor);
+    void addTensor(Qnn_Tensor_t * tensor);
+    Qnn_Tensor_t* getMaskTensor(int maxKVSize);
+    Qnn_Tensor_t* addExtraInput(Tensor* tensor);
+    Qnn_Tensor_t* addExtraOutput(Tensor* tensor);
     int getTensorIdx(const Tensor * tensor) const;
     Qnn_Tensor_t * getNativeTensor(const Tensor * tensor);
     std::shared_ptr<QNNTensorWrapper> getTensorWrapper(const Tensor * tensor);
     bool useCache() const;
     bool getUseFP16() const;
     void buildOutputDequant();
+    void buildInputCast(const Tensor *tensor);
+    void buildOutputCast();
     void pushReleaseFunc(std::function<void()> func){
         mReleaseFunc.push_back(func);
     }
+    virtual const Runtime* getRuntime() override;
 
 private:
     void clean();
@@ -114,10 +119,15 @@ private:
     mutable int mTensorCounter = 0;
     mutable std::vector<std::shared_ptr<QNNTensorWrapper>> mQNNTensorWrappers;
     mutable std::map<const Tensor::InsideDescribe::NativeInsideDescribe *, int> mTensorMap;
+    mutable std::map<const Tensor::InsideDescribe::NativeInsideDescribe *, std::pair<const Tensor*, std::shared_ptr<Tensor>>> mInputCastTensorMap;
+    mutable std::map<const Tensor::InsideDescribe::NativeInsideDescribe *, std::pair<const Tensor*, std::shared_ptr<Tensor>>> mOutputCastTensorMap;
     mutable std::map<const Tensor::InsideDescribe::NativeInsideDescribe *, std::pair<const Tensor*, std::shared_ptr<Tensor>>> mDeQuantOutputTensorMap;
     std::vector<int> mInputTensorIndexes;
     std::vector<int> mOutputTensorIndexes;
     std::vector<std::function<void()>> mReleaseFunc;
+    std::shared_ptr<QNNTensorWrapper> mMaskTensor;
+    std::vector<std::shared_ptr<QNNTensorWrapper>> mExtraInputs;
+    std::vector<std::shared_ptr<QNNTensorWrapper>> mExtraOutputs;
 };
 
 

@@ -27,6 +27,7 @@ MNN使用CMake构建项目，CMake中的宏定义列表如下：
 | NATIVE_LIBRARY_OUTPUT | 如果构建为动态库，则指定动态库的输出路径，默认为`OFF` |
 | NATIVE_INCLUDE_OUTPUT | 如果构建为动态库，则指定动态库的头文件路径，默认为`OFF` |
 | MNN_AAPL_FMWK        | 是否构建`MNN.framework`替代`*.dylib`，默认为`OFF` |
+| MNN_GENERATE_PODSPEC  | 是否构建`MNN.podspec`以支持CocoaPods发布，默认为`OFF` |
 | MNN_WITH_PLUGIN      | 是否支持`Plugin算子`，默认为`OFF` |
 | MNN_SKIPBUILD_GEOMETRY   | 是否跳过MNN的几何计算编译，若是，MNN引擎仅支持在模型转换工具时加上 --saveStaticModel 转换出来的固定输入形状的模型，默认为`OFF` |
 | MNN_BUILD_MINI       | 是否构建MNN的最小化版本，若是，开启 `MNN_SKIPBUILD_GEOMETRY` 和 `MNN_REDUCE_SIZE`，默认为`OFF` |
@@ -39,6 +40,7 @@ MNN使用CMake构建项目，CMake中的宏定义列表如下：
 | MNN_INTERNAL         | 是否构建MNN的一些内部功能，如：日志；默认为`OFF` |
 | MNN_JNI              | 是否构建MNN的JNI支持，默认为`OFF` |
 | MNN_METAL            | 是否构建`Metal`后端，默认为`OFF` |
+| MNN_METAL_TENSOR     | 是否启用`Metal Tensor`接口，该宏仅在`MNN_METAL=ON`时生效，默认为`ON` |
 | MNN_OPENCL           | 是否构建`OpenCL`后端，默认为`OFF` |
 | MNN_OPENGL           | 是否构建`OpenGL`后端，默认为`OFF` |
 | MNN_VULKAN           | 是否构建`Vulkan`后端，默认为`OFF` |
@@ -59,6 +61,7 @@ MNN使用CMake构建项目，CMake中的宏定义列表如下：
 | MNN_QNN              | 是否构建`QNN`后端，默认为`OFF` |
 | MNN_QNN_ONLINE_FINALIZE | 在`MNN_QNN`开启的基础上,是否构建在线编译模式的QNN后端，默认为`ON` |
 | MNN_QNN_CONVERT_MODE | 在`MNN_QNN`开启的基础上,是否构建Convert模式的QNN后端，默认为`OFF` |
+| MNN_NEUROPILOT            | 是否构建MLA的`NPU`离线转换后端或执行插件，默认为`OFF`  |
 | MNN_NPU            | 是否构建HIAI的`NPU`后端，默认为`OFF`  |
 | MNN_USE_SPARSE_COMPUTE | 是否使用稀疏计算，默认为`ON` |
 | MNN_BUILD_BENCHMARK  | 是否构建MNN的性能测试，默认为`OFF` |
@@ -100,4 +103,10 @@ MNN使用CMake构建项目，CMake中的宏定义列表如下：
 | MNN_BUILD_LLM_OMNI        | 若构建基于MNN的llm库和demo，是否支持图像和音频输入功能，默认为`OFF` 。仅在MNN_BUILD_LLM 打开时生效。开启时 MNN_BUILD_OPENCV , MNN_IMGCODECS , MNN_BUILD_AUDIO 同时打开|
 | MNN_BUILD_DIFFUSION  | 是否构建基于MNN的diffusion demo，默认为`OFF` . 打开时MNN_BUILD_OPENCV , MNN_IMGCODECS, MNN_LOW_MEMORY, MNN_SUPPORT_TRANSFORMER_FUSE 同步开启|
 | MNN_KLEIDIAI         | 是否集成ARM的klediAI加速库，默认为`ON` |
+| MNN_KLEIDIAI_DEFAULT_ON | 是否默认使用KLEIDIAI的Kernel, 默认为`OFF` |
 | MNN_USE_RVV          | 是否启用RISC-V向量扩展支持，默认为`OFF` |
+| MNN_MUSA_QUANT       | 是否开启 MUSA 量化相关代码编译，默认为`OFF` |
+| MNN_MUSA_BF16        | 是否开启 MUSA BFloat16 代码编译，默认为`OFF` |
+| MNN_MUSA_COMPAT_STUB | MUSA 兼容存根模式，仅编译不依赖真实 GPU，默认为`ON` |
+| MNN_MUSA_COMPAT_CUDA | 将 MUSA API 映射到 CUDA 进行编译测试，默认为`OFF` |
+| MNN_MUSA_NATIVE      | 使用原生 MUSA SDK 编译，默认为`OFF` |

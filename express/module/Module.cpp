@@ -9,6 +9,7 @@
 #include <MNN/expr/Module.hpp>
 #include <MNN/expr/ExprCreator.hpp>
 #include <MNN/expr/ExecutorScope.hpp>
+#include <MNN/ErrorCode.hpp>
 #include "core/OpCommonUtils.hpp"
 #include "PipelineModule.hpp"
 #include "core/FileLoader.hpp"
@@ -16,7 +17,7 @@
 #include "MNN_generated.h"
 #include "Utils.hpp"
 #include "RuntimeAttr.hpp"
-#include "ModuleInside.hpp"
+#include "core/TensorUtils.hpp"
 #include <MNN/AutoTime.hpp>
 #ifdef MNN_INTERNAL_ENABLED
 #include "internal/auth/ModelAuth.hpp"
@@ -221,6 +222,30 @@ public:
             Executor::RuntimeExecuteWrap wrap(mInfo->runTimeManager->getInside()->mRuntime);
             outputs = mModule->onForward(inputs);
         }
+        
+        // Check execution status after forward
+        if (!outputs.empty()) {
+            bool hasNoExecution = false;
+            for (auto& v : outputs) {
+                auto t = Utils::getTensor(v);
+                if (nullptr != t) {
+                    auto backend = TensorUtils::getDescribeOrigin(t)->getBackend();
+                    if (nullptr != backend) {
+                        // Try to sync to check execution status
+                        int syncResult = backend->onSync(Tensor::MAP_TENSOR_READ, false, t);
+                        if (NO_EXECUTION == syncResult) {
+                            hasNoExecution = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (hasNoExecution) {
+                MNN_PRINT("Warning, Backend has stop execute, return empty output vector varps\n");
+                outputs.clear();
+            }
+        }
+        
 #ifdef MNN_INTERNAL_ENABLED
         do {
             if (outputs.empty()) {
@@ -252,16 +277,18 @@ public:
     }
     virtual Module* clone(CloneContext* ctx) const override {
         auto mModule = mChildren[0];
-        auto origin = mInfo->runTimeManager->getInside();
-        ScheduleConfig config;
-        config.type = origin->mRuntime.first.begin()->first;
-        config.numThread = origin->mContent->mNumberThread;
-        std::shared_ptr<Executor::RuntimeManager> newRt (Executor::RuntimeManager::createRuntimeManager(config));
-        const_cast<RuntimeAttr*>(newRt->getInside())->mContent = origin->mContent;
+        if (nullptr == ctx->pRuntimeManager) {
+            auto origin = mInfo->runTimeManager->getInside();
+            ScheduleConfig config;
+            config.type = origin->mRuntime.first.begin()->first;
+            config.numThread = origin->mContent->mNumberThread;
+            std::shared_ptr<Executor::RuntimeManager> newRt (Executor::RuntimeManager::createRuntimeManager(config));
+            const_cast<RuntimeAttr*>(newRt->getInside())->mContent = origin->mContent;
+            ctx->pRuntimeManager = newRt;
+        }
         std::shared_ptr<Module::Info> newInfo(new Module::Info);
         *newInfo = *mInfo;
-        ctx->pRuntimeManager = newRt;
-        newInfo->runTimeManager = newRt;
+        newInfo->runTimeManager = ctx->pRuntimeManager;
         std::shared_ptr<Module> submodule(mModule->clone(ctx));
         NetModule* module(new NetModule(submodule, newInfo, nullptr, 0, 0.0f));
 #ifdef MNN_INTERNAL_ENABLED
@@ -476,47 +503,12 @@ static Module* loadInternal(const std::vector<std::string>& inputs, const std::v
     return new NetModule(m, info, net, length, (float)_time.durationInUs() / 1000.0f);
 }
 
-EXPRP Module::CloneContext::getOrClone(EXPRP expr) {
-    auto it = mExprMap.find(expr.get());
-    if (it == mExprMap.end()) {
-        EXPRP replica;
-        if (expr->get() == nullptr) {
-            VARP var = Variable::create(expr);
-            Variable::Info info(*var->getInfo());
-            replica = Expr::create(std::move(info), var->readMap<void>(), expr->inputType(),
-                                   (expr->inputType() != VARP::CONSTANT) ? Expr::COPY : Expr::REF);
-        } else {
-            std::vector<VARP> inputs;
-            for (auto& input: expr->inputs()) {
-                inputs.emplace_back(getOrClone(input));
-            }
-            replica = Expr::create(expr->extra(), std::move(inputs), expr->outputSize());
-        }
-        replica->setName(expr->name());
-        it = mExprMap.emplace(expr.get(), replica).first;
-    }
-    return it->second;
-}
-
-VARP Module::CloneContext::getOrClone(VARP var) {
-    auto it = mVarMap.find(var.get());
-    if (it == mVarMap.end()) {
-        auto expr = var->expr();
-        VARP replica = Variable::create(getOrClone(expr.first), expr.second);
-        it = mVarMap.emplace(var.get(), replica).first;
-    }
-    return it->second;
-}
-
 Module* Module::clone(const Module* module, const bool shareParams) {
-    CloneContext context(shareParams);
+    CloneContext context;
     return module->clone(&context);
 }
 
 Module* Module::cloneBaseTo(CloneContext* ctx, Module* module) const {
-    for (const Express::VARP& var : mParameters) {
-        module->mParameters.push_back(ctx->getOrClone(var));
-    }
     module->mIsTraining = mIsTraining;
     module->mName = mName;
     module->mType = mType;

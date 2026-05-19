@@ -6,23 +6,26 @@
     <string name="action_settings">Settings</string>
     <string name="main_describe">mnn-llm</string>
     <string name="model_loading">Model loading…</string>
+    <string name="model_load_failed">Model load failed: %1$s</string>
     <string name="download_not_started">%1$s</string>
     <string name="downloaded_click_to_chat"> %1$s</string>
     <string name="downloaded_update_available"> %1$s (Update Available)</string>
     <string name="local_click_to_chat"> %1$s %2$s</string>
     <string name="download_failed_click_retry">Download failed: %1$s, click to retry</string>
-    <string name="downloading_progress">%1$s | %2$s</string>"
+    <string name="downloading_progress">%1$s | %2$s</string>
     <string name="downloading_paused">Paused: %1$.2f%%</string>
     <string name="config_file_not_found">Model config file not found: %1$s</string>
     <string name="model_hello_prompt">Is there anything I can help you with?</string>
     <string name="model_hello_prompt_diffusion">Please input prompt\nI can generate an image for you</string>
+    <string name="model_hello_prompt_sana">Please upload a face image to convert to anime</string>
     <string name="delete_model">Delete Model</string>
     <string name="pause_download">Pause Download</string>
     <string name="start_download">Start Download</string>
     <string name="download_preparing">Download preparing</string>
     <string name="downloading_please_wait">Downloading please wait</string>
-    <string name="loading_failed_click_tor_retry">Loading failed: %1$s, click tor retry</string>
+    <string name="loading_failed_click_tor_retry">Loading failed: %1$s, click to retry</string>
     <string name="input_messages">Input messages here</string>
+    <string name="input_face_image_hint">Please upload a face image</string>
     <string name="send">send</string>
     <string name="raise_issue">Report an issue</string>
     <string name="star_project">Star in Github </string>
@@ -32,10 +35,11 @@
     <string name="history_cleard">history cleared</string>
     <string name="press_to_chat">Press To Talk</string>
     <string name="start_new_chat">Start New Conversation</string>
-    <string name="new_conversation_started">New converstaion started</string>
+    <string name="new_conversation_started">New conversation started</string>
     <string name="take_photo">Photo</string>
     <string name="choose_image">Image</string>
     <string name="select_audio">Audio(wav)</string>
+    <string name="select_video">Video</string>
     <string name="show_performance_metrics">Show Performance Metrics</string>
     <string name="realtime_audio_playback">Real-time Audio Playback</string>
     <string name="report_issue">Issue</string>
@@ -53,6 +57,8 @@
     <string name="history_delete_success">History Delete Success</string>
     <string name="diffusion_generated_message">Here\'s the generated image</string>
     <string name="diffusion_generate_progress">Image Generate progress: %1$s%%</string>
+    <string name="diffusion_wait_hint_no_progress">Image generation takes about 1 minute. Please wait patiently...</string>
+    <string name="diffusion_opencl_wait_hint">Image generation takes about 1 minute. Please wait patiently...\nProgress: %1$s%%</string>
     <string name="no_history">No history, please select model in the model list and chat</string>
     <string name="recording_permission_denied">Please allow permission to record audio</string>
     <string name="camera_permission_denied">Camera permission is required to take photos</string>
@@ -60,6 +66,7 @@
     <string name="no_camera_app_found">No camera app found on this device</string>
     <string name="file_manager_required">Please install a File Manager</string>
     <string name="audio_file_failed">Failed to get audio file</string>
+    <string name="video_file_failed">Failed to get video file</string>
     <string name="select_picture">Select Picture</string>
     <string name="select_wav_file">Select a WAV file</string>
     <string name="release_to_send">Release to Send, Slide up to cancel</string>
@@ -68,6 +75,8 @@
     <string name="r1_thinking_message">Thinking…</string>
     <string name="r1_think_complete_template">Has thought for %1$s seconds</string>
     <string name="copy_text">Copy</string>
+    <string name="copy_config">Copy Config</string>
+    <string name="config_info">Config Info</string>
     <string name="select_text">Select text</string>
     <string name="copy_success">Copy success</string>
     <string name="debug_message_copied">debug message copied, please report issue in github</string>
@@ -76,9 +85,16 @@
     <string name="debug_mode_control">Debug Mode Control</string>
     <string name="close_debug_mode_title">Close Debug Mode</string>
     <string name="close_debug_mode_message">Are you sure you want to close debug mode? This will hide the debug mode option from settings until you activate it again by clicking the version info 5 times.</string>
+    <string name="debug_test_crashlytics_non_fatal">Test Crashlytics (Non-fatal)</string>
+    <string name="debug_test_crashlytics_fatal">Test Crashlytics (Fatal Crash)</string>
+    <string name="debug_test_crashlytics_non_fatal_sent">Crashlytics non-fatal event sent</string>
+    <string name="debug_test_crashlytics_fatal_confirm_title">Trigger fatal crash test</string>
+    <string name="debug_test_crashlytics_fatal_confirm_message">This will crash the app immediately for Crashlytics verification. Continue?</string>
+    <string name="debug_test_crashlytics_fatal_confirm_action">Crash now</string>
     <string name="use_model_scope_download">Use modelscope to download</string>
     <string name="clear_mmap_cache">Clear mmap cache</string>
     <string name="use_mmap">Use mmap</string>
+    <string name="prompt_cache">Prompt Caching</string>
     <string name="sampler">select sampler</string>
     <string name="backend">use opencl</string>
     <string name="local_available">Local Available</string>
@@ -101,6 +117,8 @@
     <string name="about">About</string>
     <string name="settings">Settings</string>
     <string name="current_version">Current Version:%1$s</string>
+    <string name="current_version_check_update">Current Version:%1$s (Tap to check updates)</string>
+    <string name="mnn_version">MNN Engine Version</string>
     <string name="select_download_provider">Select Download Provider</string>
     <string name="settings_complete">it\'s recommended to remove unfinished tasks and redownload to prevent errors.</string>
     <string name="stop_download_tasks_when_chat">Stop downloads when chat</string>
@@ -125,19 +143,45 @@
     <string name="modelers">Modelers</string>
     <string name="huggingface">HuggingFace</string>
     <string name="diffusion_mode_memory_saving">Memory Saving Mode</string>
-    <string name="diffusion_mode_memory_engough">Memory Engough Mode</string>
+    <string name="diffusion_mode_memory_enough">Memory Enough Mode</string>
     <string name="diffusion_mode_memory_balance">Memory Balance Mode</string>
     <string name="diffusion_memory_mode">Diffusion Memory Mode</string>
     <string name="voice_model_management">Voice Model Management</string>
+    <string name="storage_management">Storage management</string>
+    <string name="storage_summary_internal">Internal Storage</string>
+    <string name="storage_summary_model">Model Storage</string>
+    <string name="storage_total">Total</string>
+    <string name="storage_used">Used</string>
+    <string name="storage_free">Free</string>
+    <string name="storage_model_files">Model files</string>
+    <string name="storage_mmap_cache">Mmap cache</string>
+    <string name="storage_orphan_cache">Cleanable cache</string>
+    <string name="storage_mmap_by_model">Storage Detail</string>
+    <string name="storage_detail">Detail</string>
+    <string name="storage_status_orphan">Cleanable</string>
+    <string name="storage_status_tracked">TRACKED</string>
+    <string name="storage_clean_cleanable_cache">Clean cleanable cache</string>
+    <string name="storage_clean_cleanable_confirm_title">Clean cleanable cache?</string>
+    <string name="storage_clean_cleanable_confirm_message">This will remove all cache that is not linked to any downloaded model. This action cannot be undone.</string>
+    <string name="storage_detail_resolved_model">Resolved model ID</string>
+    <string name="storage_detail_model_dir">Model dir</string>
+    <string name="storage_detail_config_dir">Config dir</string>
+    <string name="storage_detail_mmap_dir">Mmap dir</string>
+    <string name="path_copied">Path copied</string>
     <string name="voice_model_management_summary">Manage TTS and ASR models, set default models</string>
     <string name="model_settings">Settings</string>
     <string name="model_settings_title">Model Settings</string>
     <string name="api_settings">API Settings</string>
     <string name="api_settings_title">API Service Settings</string>
     <string name="api_console">API Console</string>
+    
     <string name="api_console_title">API Service Console</string>
+    
     <string name="api_port">Port</string>
+    
     <string name="api_bind_ip">Bind IP Address</string>
+    
+    <string name="use_https_url">Use HTTPS URL for clients</string>
     <string name="api_cors_enabled">Enable CORS</string>
     <string name="api_cors_origins">Allowed Origins</string>
     
@@ -185,10 +229,12 @@
     <string name="cors_disabled_status">Disabled</string>
     <string name="api_key_enabled">API Key Enabled</string>
     <string name="no_authentication">No Authentication</string>
-    <string name="console_started">API Service Console Started</string>
+    <string name="console_started">API Service Console Opened</string>
     <string name="server_running_message">Server is running</string>
     <string name="waiting_for_connections">Waiting for client connections...</string>
     <string name="server_not_started">Server not started</string>
+    <string name="service_disabled_hint">API service is disabled. Turn on API Service in Settings.</string>
+    <string name="server_not_started_hint">If this persists, verify API Service is on and notifications are allowed.</string>
     <string name="server_status_template">Server status: %1$s</string>
     <string name="test_log_message1">This is a test log to verify line number display and click navigation</string>
     <string name="test_log_message2">Debug info: Line number feature test</string>
@@ -203,6 +249,7 @@
     <string name="server_running_at_template">Server running at %1$s:%2$d</string>
     <string name="close">Close</string>
     <string name="back">Back</string>
+    <string name="share_image">Share Image</string>
     <string name="share_benchmark_result">Share Benchmark Result</string>
     
     <string name="api_auth_enabled">Enable API Key Authentication</string>
@@ -246,7 +293,7 @@
     <string name="regenerate">Regenerate</string>
     <string name="copy_audio_info">Copy Audio Info</string>
     <string name="report_crash">Report Crash</string>
-    <string name="model_not_found">Model not foud %1$s</string>
+    <string name="model_not_found">Model not found %1$s</string>
     <string name="out_audio">Output Audio</string>
     <string name="audio_output_confirm">Audio Output is very slow for now, Would you like to continue anyway?</string>
     <string name="confirm_delete_model_title">Confirm Deletion</string>
@@ -274,11 +321,14 @@
     <string name="download_state">Download Status</string>
     <string name="all">All</string>
     <string name="others">Others</string>
+    <string name="not_downloaded">Not Downloaded</string>
     <string name="download_state_not_start">Download Unstarted</string>
     <string name="download_state_completed">Downloaded</string>
     <string name="download_state_downloading">Downloading</string>
     <string name="download_state_failed">Download Failed</string>
     <string name="download_state_paused">Download Paused</string>
+    <string name="download_state_cancelled">Cancelled</string>
+    <string name="download_state_preparing">Preparing</string>
     <string name="download_state_updating">Updating</string>
     <string name="no_models_found">No models available. Please download a model first.</string>
     <string name="no_filtered_models_title">No models match your filters</string>
@@ -321,9 +371,37 @@
     <string name="tts_playback_completed">Playback completed. Generated %1$d samples.</string>
     <string name="tts_error">TTS Error: %1$s</string>
     <string name="tts_not_ready">TTS Service not ready</string>
+    <string name="start_video_decoder_test">Start Video Decoder Test</string>
+    <string name="stop_video_decoder_test">Stop Video Decoder Test</string>
+    <string name="process_video_file">Process Video File</string>
+    <string name="video_decoder_test_input_hint">Select a video file to decode</string>
+    <string name="video_decoder_test_title">Video Decoder Test</string>
+    <string name="video_decoder_test_description">Test the optimized video decoder implementation</string>
+    <string name="video_file_selection">Video File Selection</string>
+    <string name="select_video_file">Select Video File</string>
+    <string name="no_video_selected">No video file selected</string>
+    <string name="decoder_configuration">Decoder Configuration</string>
+    <string name="max_frames">Max Frames</string>
+    <string name="sample_interval">Sample Interval</string>
+    <string name="max_buffer_count">Max Buffer Count</string>
+    <string name="control_buttons">Control Buttons</string>
+    <string name="start_decode">Start Decode</string>
+    <string name="stop_decode">Stop Decode</string>
+    <string name="decode_results">Decode Results</string>
+    <string name="no_results_yet">No results yet</string>
+    <string name="decode_log">Decode Log</string>
+    <string name="long_press_to_clear_video">Long press video name to clear selection</string>
     <string name="placeholder_test_1">Test Item 1 (Coming Soon)</string>
     <string name="placeholder_test_2">Test Item 2 (Coming Soon)</string>
     <string name="debug_log">Debug Log</string>
+    
+    <!-- Test Case Strings -->
+    <string name="asr_test_title">ASR Test</string>
+    <string name="asr_test_description">Test Automatic Speech Recognition functionality</string>
+    <string name="tts_test_title">TTS Test</string>
+    <string name="tts_test_description">Test Text-to-Speech functionality</string>
+    <string name="debug_settings_title">Debug Settings</string>
+    <string name="debug_settings_description">Configure debug mode settings and preferences</string>
     
     <!-- Voice Chat Strings -->
     <string name="voice_chat">Voice Chat</string>
@@ -343,6 +421,9 @@
     <string name="voice_chat_stop">Stop</string>
     <string name="voice_chat_stopping">Stopping...</string>
     <string name="voice_chat_ready_greeting">What can I help you with?</string>
+    <string name="echo_cancellation_mode">Echo Cancellation</string>
+    <string name="mic_mode_hardware">Hardware</string>
+    <string name="mic_mode_auto_mute">Auto Mute</string>
     <string name="voice_chat_usage_notice">To use voice chat, TTS and ASR models need to be downloaded. Please note multi-language support.</string>
     <string name="nav_name_chats">My Models</string>
     <string name="benchmark">Benchmark</string>
@@ -356,9 +437,17 @@
     <string name="menu_pin_model">Pin to Top</string>
     <string name="menu_unpin_model">Unpin from Top</string>
     <string name="filter_section_model_tags">Model Tags</string>
-    <string name="filter_all">全部筛选</string>
+    <string name="filter_all">All Filters</string>
+    <string name="filter_section_download_status">Download Status</string>
+    <string name="filter_download_not_started">Not Started</string>
+    <string name="filter_download_downloading">Downloading</string>
+    <string name="filter_download_paused">Paused</string>
+    <string name="filter_download_completed">Completed</string>
+    <string name="filter_all_option">All</string>
+    <string name="filters_reset">Filters reset</string>
+    <string name="filters_applied">Filters applied</string>
     <string name="local">Local</string>
-    
+
     <!-- Voice Chat Download Strings -->
     <string name="voice_models_downloading_progress">Downloading voice models %1$d%% (%2$s)</string>
     <string name="voice_models_download_complete">Voice models download complete! Starting voice chat...</string>
@@ -418,6 +507,16 @@
     <!-- Structured Progress Strings -->
     <string name="benchmark_progress_detailed">Test %1$d/%2$d (PP=%3$d, TG=%4$d)\nRuntime: %5$.3fs, Prefill: %6$.3fs, Decode: %7$.3fs\nPrefill Speed: %8$.2f t/s, Decode Speed: %9$.2f t/s</string>
     <string name="benchmark_progress_simple">Test %1$d/%2$d (PP=%3$d, TG=%4$d)</string>
+
+    <!-- Backend Selection Strings -->
+    <string name="select_backend">Select Backend</string>
+    <string name="backend_cpu">CPU</string>
+    <string name="backend_opencl">OpenCL</string>
+    <string name="backend_label">Backend</string>
+    <string name="opencl_warning_title">OpenCL Notice</string>
+    <string name="opencl_warning_message">OpenCL backend support for the current model is still in progress. Please wait until support is completed.</string>
+    <string name="opencl_warning_use">Use Anyway</string>
+    <string name="opencl_warning_use_countdown">Use Anyway (%1$ds)</string>
     
     <string name="api_service_channel_name">API Service Channel</string>
     <string name="request_added_to_queue">Request added to queue: requestId=%1$s, traceId=%2$s, queue size=%3$d, priority=%4$s</string>
@@ -487,7 +586,6 @@
     <string name="max_memory">Max Memory</string>
     <string name="please_download_model">Please download a model first</string>
     <string name="go_to_download">Go to download</string>
-    <string name="all_filter">All Filters</string>
     <string name="model_card">Model Card</string>
     <string name="menu">Menu</string>
     <string name="open_in_browser">Open in Browser</string>
@@ -508,6 +606,7 @@
     <!-- Debug Feature Strings -->
     <string name="debug_show_model_info">Show Model Info Menu</string>
     <string name="checking_repo_updates">Checking for repository updates...</string>
+    <string name="menu_show_model_info_title">Model Information</string>
     <string name="repo_update_check_result">Repository Update Check</string>
     <string name="allow_network_market_data">Allow network to fetch model market data</string>
     <string name="enable_network_delay">Enable network delay (3 seconds)</string>
@@ -541,4 +640,39 @@
     <string name="unknown_error">Unknown error</string>
     <string name="not_available">N/A</string>
     <string name="unknown_model">Unknown Model</string>
+    
+    <!-- Large Model Warning Dialog Strings -->
+    <string name="large_model_warning_title">Large Model Warning</string>
+    <string name="large_model_warning_message">The model \"%1$s\" is %2$sB in size, which is quite large and may cause the app to crash due to memory limitations. Do you want to continue opening this model?</string>
+    <string name="continue_open">Continue Open</string>
+    
+    <!-- Privacy Policy Strings -->
+    <string name="privacy_policy_title">Crash Data Consent</string>
+    <string name="privacy_policy_content">To improve app stability, MNN Chat can collect crash and diagnostic data through Firebase Crashlytics.\n\nWe only use this data to locate and fix crashes, improve reliability, and accelerate iteration.\n\nYou can choose whether to enable this collection:\n• Agree: allow crash and diagnostic reporting\n• Disagree: no crash data is uploaded\n\nYour choice will not affect core app usage.</string>
+    <string name="privacy_policy_agree">I understand and agree to crash data collection for stability improvements</string>
+    <string name="privacy_policy_agree_button">Agree and Enable</string>
+    <string name="privacy_policy_disagree">Disagree and Continue</string>
+    <string name="privacy_policy_required">You must agree to the Privacy Policy to use this application</string>
+    <string name="privacy_policy_exit_message">You have chosen not to agree to the Privacy Policy. The application will now exit.</string>
+    <string name="privacy_policy_consent_enabled">Crash reporting enabled. Only crash/diagnostic data will be collected.</string>
+    <string name="privacy_policy_consent_disabled">Crash reporting disabled. No crash data will be uploaded.</string>
+    <string name="crash_diagnostics_enabled_title">Crash and Diagnostics Data</string>
+    <string name="crash_diagnostics_enabled_summary">Only necessary crash and diagnostics data is collected to improve stability.</string>
+    <string name="crash_diagnostics_disable_title">Turn Off Crash Diagnostics?</string>
+    <string name="crash_diagnostics_disable_confirm_message">To improve stability, we only collect necessary diagnostics data. Confirm turning this off?</string>
+    <string name="crash_diagnostics_disable_confirm_action">Turn Off</string>
+    <string name="loading_models">Loading models…</string>
+    <string name="copying_builtin_models">First install, copying built-in models…</string>
+    <string name="builtin">Builtin</string>
+    
+    <!-- QNN Libraries Download Strings -->
+    <string name="qnn_libs_download_title">Download QNN Libraries</string>
+    <string name="qnn_libs_download_message">This QNN model requires additional libraries. Download now?</string>
+    <string name="qnn_libs_downloading">Downloading QNN libraries…</string>
+    <string name="qnn_libs_download_failed">Failed to download QNN libraries</string>
+    <string name="qnn_libs_load_failed">Failed to load QNN libraries</string>
+    <string name="qnn_device_not_supported">QNN model detected but device does not support QNN acceleration. Please use a different model.</string>
+    <string name="save_image">Save Image</string>
+    <string name="image_saved_to_gallery">Image saved to gallery</string>
+    <string name="failed_to_save_image">Failed to save image</string>
 </resources>

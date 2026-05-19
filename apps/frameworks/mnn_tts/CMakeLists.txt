@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(BUILD_BERTVITS2 "Build BertVit2 TTS " ON)
 option(BUILD_PIPER "Build PIPER TTS " OFF)
+option(BUILD_SUPERTONIC "Build Supertonic TTS " ON)
 option(BUILD_ANDROID "Build for Android" OFF)
 
 if(ANDROID)
@@ -19,6 +20,7 @@ add_library(MNN
 set(MNN_SOURCE_ROOT ${CMAKE_CURRENT_LIST_DIR}/../../../)
 set(MNN_INSTALL_ROOT "${MNN_SOURCE_ROOT}/project/android/build_64")
 set(LIB_PATH "${MNN_INSTALL_ROOT}/lib")
+set(MNN_EXPRESS_PATH "${LIB_PATH}/libMNN_Express.so")
 message(STATUS "MNN_SOURCE_ROOT: ${MNN_SOURCE_ROOT}")
 message(STATUS "LIB_PATH: ${LIB_PATH}")
 
@@ -26,6 +28,12 @@ set_target_properties(MNN PROPERTIES INTERFACE_INCLUDE_DIRECTORIES
         "${MNN_SOURCE_ROOT}/include;${MNN_SOURCE_ROOT}/tools/audio/include/;${MNN_SOURCE_ROOT}/transformers/llm/engine/include"
 )
 set_target_properties(MNN PROPERTIES IMPORTED_LOCATION "${LIB_PATH}/libMNN.so")
+
+if(EXISTS "${MNN_EXPRESS_PATH}")
+  add_library(MNNExpress SHARED IMPORTED)
+  set_target_properties(MNNExpress PROPERTIES IMPORTED_LOCATION "${MNN_EXPRESS_PATH}")
+  message(STATUS "Linking legacy split runtime: ${MNN_EXPRESS_PATH}")
+endif()
 
 include_directories(
 	${CMAKE_CURRENT_LIST_DIR}/include
@@ -40,8 +48,14 @@ endif()
 
 if(BUILD_PIPER)
   include_directories(
-  	${CMAKE_CURRENT_LIST_DIR}/include/piper
+    ${CMAKE_CURRENT_LIST_DIR}/include/piper
     ${CMAKE_CURRENT_LIST_DIR}/third_party/piper/espeak-ng/src/include/espeak-ng/
+  )
+endif()
+
+if(BUILD_SUPERTONIC)
+  include_directories(
+    ${CMAKE_CURRENT_LIST_DIR}/include/supertonic
   )
 endif()
 
@@ -74,6 +88,12 @@ if(BUILD_PIPER)
   )
 endif()
 
+if(BUILD_SUPERTONIC)
+  set(SUPERTONIC_SOURCE_FILES
+    ${CMAKE_CURRENT_LIST_DIR}/src/supertonic/mnn_supertonic_tts_impl.cpp
+  )
+endif()
+
 if(BUILD_ANDROID)
   set(ANDROID_SOURCE_FILES
     ${CMAKE_CURRENT_LIST_DIR}/src/android/tts_service.cpp
@@ -85,11 +105,23 @@ if(BUILD_PIPER)
   add_subdirectory(third_party/piper/espeak-ng)
 endif()
 
-add_library(${PROJECT_NAME} SHARED ${PIPER_SOURCE_FILES} ${BERTVITS2_SOURCE_FILES} ${SHARED_SOURCE_FILES} ${ANDROID_SOURCE_FILES})
+add_library(${PROJECT_NAME} SHARED ${PIPER_SOURCE_FILES} ${BERTVITS2_SOURCE_FILES} ${SUPERTONIC_SOURCE_FILES} ${SHARED_SOURCE_FILES} ${ANDROID_SOURCE_FILES})
 
 # Add 16KB page size support for Android
 if(BUILD_ANDROID)
     target_link_options(${PROJECT_NAME} PRIVATE "-Wl,-z,max-page-size=16384")
 endif()
 
-target_link_libraries(${PROJECT_NAME} log MNN ) 
+if(BUILD_ANDROID)
+    if(TARGET MNNExpress)
+        target_link_libraries(${PROJECT_NAME} log MNN MNNExpress)
+    else()
+        target_link_libraries(${PROJECT_NAME} log MNN)
+    endif()
+else()
+    if(TARGET MNNExpress)
+        target_link_libraries(${PROJECT_NAME} MNN MNNExpress)
+    else()
+        target_link_libraries(${PROJECT_NAME} MNN)
+    endif()
+endif() 

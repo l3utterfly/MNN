@@ -7,17 +7,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
-import androidx.preference.PreferenceManager
 import com.alibaba.mls.api.download.DownloadInfo
 import com.alibaba.mls.api.download.DownloadListener
 import com.alibaba.mls.api.download.DownloadState
 import com.alibaba.mls.api.download.ModelDownloadManager
-import com.alibaba.mnnllm.android.modelmarket.ModelMarketData
+import com.alibaba.mnnllm.android.download.DownloadForegroundServiceManager
 import com.alibaba.mnnllm.android.modelmarket.ModelMarketItem
 import com.alibaba.mnnllm.android.modelmarket.ModelMarketItemWrapper
 import com.alibaba.mnnllm.android.modelmarket.ModelRepository
-import com.alibaba.mnnllm.android.modelmarket.SourceSelectionDialogFragment
-import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -29,7 +26,6 @@ class VoiceModelMarketViewModel(application: Application) : AndroidViewModel(app
     }
 
     private val downloadManager = ModelDownloadManager.getInstance(application)
-    private val modelRepository = ModelRepository(application)
     private var allTtsModels: List<ModelMarketItemWrapper> = emptyList()
     private var allAsrModels: List<ModelMarketItemWrapper> = emptyList()
     private var mainHandler: Handler = Handler(application.mainLooper)
@@ -50,7 +46,7 @@ class VoiceModelMarketViewModel(application: Application) : AndroidViewModel(app
     fun loadTtsModels() {
         viewModelScope.launch {
             try {
-                val ttsItems = modelRepository.getTtsModels()
+                val ttsItems = ModelRepository.getMarketDataSuspend().ttsModels
                 allTtsModels = processModels(ttsItems)
                 _models.postValue(allTtsModels)
                 Log.d(TAG, "Loaded ${allTtsModels.size} TTS models")
@@ -64,7 +60,7 @@ class VoiceModelMarketViewModel(application: Application) : AndroidViewModel(app
     fun loadAsrModels() {
         viewModelScope.launch {
             try {
-                val asrItems = modelRepository.getAsrModels()
+                val asrItems = ModelRepository.getMarketDataSuspend().asrModels
                 allAsrModels = processModels(asrItems)
                 _models.postValue(allAsrModels)
                 Log.d(TAG, "Loaded ${allAsrModels.size} ASR models")
@@ -107,9 +103,19 @@ class VoiceModelMarketViewModel(application: Application) : AndroidViewModel(app
         _models.postValue(updatedList)
     }
 
+    private fun resolveModelName(modelId: String): String? {
+        return (_models.value ?: emptyList())
+            .asSequence()
+            .plus(allTtsModels.asSequence())
+            .plus(allAsrModels.asSequence())
+            .firstOrNull { it.modelMarketItem.modelId == modelId }
+            ?.modelMarketItem
+            ?.modelName
+    }
+
     fun startDownload(item: ModelMarketItem) {
         Log.d(TAG, "Starting download for: ${item.modelId}")
-        downloadManager.startDownload(item)
+        downloadManager.startDownload(item.modelId)
     }
 
     fun pauseDownload(item: ModelMarketItem) {
@@ -120,13 +126,13 @@ class VoiceModelMarketViewModel(application: Application) : AndroidViewModel(app
     fun deleteModel(item: ModelMarketItem) {
         viewModelScope.launch {
             Log.d(TAG, "Deleting model: ${item.modelId}")
-            downloadManager.deleteModel(item)
+            downloadManager.deleteModel(item.modelId)
         }
     }
 
     fun updateModel(item: ModelMarketItem) {
         Log.d(TAG, "Starting update for: ${item.modelId}")
-        downloadManager.startDownload(item)
+        downloadManager.startDownload(item.modelId)
     }
 
     // DownloadListener implementation
@@ -149,19 +155,34 @@ class VoiceModelMarketViewModel(application: Application) : AndroidViewModel(app
         Log.d(TAG, "Download started for: $modelId")
         mainHandler.post {
             updateDownloadInfo(modelId)
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = true
+            )
             _itemUpdate.value = modelId
         }
     }
 
     override fun onDownloadProgress(modelId: String, downloadInfo: DownloadInfo) {
         mainHandler.post {
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = downloadInfo.downloadState == DownloadState.DOWNLOADING
+            )
             _progressUpdate.value = Pair(modelId, downloadInfo)
         }
     }
 
-    override fun onDownloadFailed(modelId: String, exception: Exception) {
-        Log.d(TAG, "Download failed for: $modelId, error: ${exception.message}")
+    override fun onDownloadFailed(modelId: String, e: Exception) {
+        Log.d(TAG, "Download failed for: $modelId, error: ${e.message}")
         mainHandler.post {
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = false
+            )
             updateDownloadInfo(modelId)
             _itemUpdate.value = modelId
         }
@@ -170,6 +191,11 @@ class VoiceModelMarketViewModel(application: Application) : AndroidViewModel(app
     override fun onDownloadFinished(modelId: String, path: String) {
         Log.d(TAG, "Download finished for: $modelId")
         mainHandler.post {
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = false
+            )
             updateDownloadInfo(modelId)
             _itemUpdate.value = modelId
         }
@@ -178,6 +204,11 @@ class VoiceModelMarketViewModel(application: Application) : AndroidViewModel(app
     override fun onDownloadPaused(modelId: String) {
         Log.d(TAG, "Download paused for: $modelId")
         mainHandler.post {
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = false
+            )
             updateDownloadInfo(modelId)
             _itemUpdate.value = modelId
         }
@@ -186,6 +217,11 @@ class VoiceModelMarketViewModel(application: Application) : AndroidViewModel(app
     override fun onDownloadFileRemoved(modelId: String) {
         Log.d(TAG, "Download file removed for: $modelId")
         mainHandler.post {
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = false
+            )
             updateDownloadInfo(modelId)
             _itemUpdate.value = modelId
         }

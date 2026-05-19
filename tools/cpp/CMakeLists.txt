@@ -12,6 +12,7 @@ add_executable(GetMNNInfo ${CMAKE_CURRENT_LIST_DIR}/GetMNNInfo.cpp)
 list(APPEND MNN_CPP_TOOLS GetMNNInfo)
 add_executable(ModuleBasic.out ${CMAKE_CURRENT_LIST_DIR}/ModuleBasic.cpp)
 list(APPEND MNN_CPP_TOOLS ModuleBasic.out)
+
 IF(CMAKE_SYSTEM_NAME MATCHES "^Android")
     add_executable(GpuInterTest.out ${CMAKE_CURRENT_LIST_DIR}/GpuInterTest.cpp )
     target_link_libraries(GpuInterTest.out android)
@@ -43,10 +44,8 @@ list(APPEND MNN_CPP_TOOLS backendTest.out)
 add_executable(testModel.out ${CMAKE_CURRENT_LIST_DIR}/testModel.cpp)
 list(APPEND MNN_CPP_TOOLS testModel.out)
 
-if (MNN_QNN)
-    add_executable(MNN2QNNModel ${CMAKE_CURRENT_LIST_DIR}/MNN2QNNModel.cpp)
-    list(APPEND MNN_CPP_TOOLS MNN2QNNModel)
-endif()
+add_executable(compilefornpu ${CMAKE_CURRENT_LIST_DIR}/compilefornpu.cpp ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/flatbuffers/src/util.cpp)
+list(APPEND MNN_CPP_TOOLS compilefornpu)
 
 add_executable(testModel_expr.out ${CMAKE_CURRENT_LIST_DIR}/testModel_expr.cpp)
 list(APPEND MNN_CPP_TOOLS testModel_expr.out)
@@ -68,6 +67,14 @@ list(APPEND MNN_CPP_TOOLS testTrain.out)
 
 add_executable(fuseTest ${CMAKE_CURRENT_LIST_DIR}/fuseTest.cpp)
 list(APPEND MNN_CPP_TOOLS fuseTest)
+
+if (MNN_QNN)
+    add_executable(generateIO ${CMAKE_CURRENT_LIST_DIR}/generateIO.cpp)
+    list(APPEND MNN_CPP_TOOLS generateIO)
+    add_executable(MNN2QNNModel ${CMAKE_CURRENT_LIST_DIR}/MNN2QNNModel.cpp)
+    list(APPEND MNN_CPP_TOOLS MNN2QNNModel)
+endif()
+
 endif()
 
 foreach(TARGET ${MNN_CPP_TOOLS})

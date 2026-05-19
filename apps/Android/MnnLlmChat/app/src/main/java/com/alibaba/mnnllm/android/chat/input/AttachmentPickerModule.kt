@@ -16,16 +16,21 @@ import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.lifecycle.lifecycleScope
 import com.alibaba.mnnllm.android.R
 import com.alibaba.mnnllm.android.chat.ChatActivity
 import com.alibaba.mnnllm.android.utils.FileUtils
-import com.alibaba.mnnllm.android.model.ModelUtils
+import com.alibaba.mnnllm.android.model.ModelTypeUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 
 class AttachmentPickerModule(private val activity: ChatActivity) {
     private val takePhotoView: View
     private val chooseImageView: View
+    private val chooseVideoView: View
 
     private val attachmentPreview: ImageView
     private val imagePreviewLayout: View
@@ -36,19 +41,27 @@ class AttachmentPickerModule(private val activity: ChatActivity) {
     private var photoFile: File? = null
     private var callback: ImagePickCallback? = null
 
+    private val imagePreviewRecycler: androidx.recyclerview.widget.RecyclerView
+    private val imagePreviewAdapter: ImagePreviewAdapter
+
     init {
-        val modelName = activity.modelName
         takePhotoView = activity.findViewById(R.id.more_item_camera)
         chooseImageView = activity.findViewById(R.id.more_item_photo)
-        if (ModelUtils.isVisualModel(activity.modelId!!)) {
+        chooseVideoView = activity.findViewById(R.id.more_item_video)
+        if (ModelTypeUtils.isVisualModel(activity.modelId!!)) {
             takePhotoView.setOnClickListener { v: View? -> takePhoto() }
             chooseImageView.setOnClickListener { v: View? -> chooseImageView() }
         } else {
             takePhotoView.visibility = View.GONE
             chooseImageView.visibility = View.GONE
         }
+        if (ModelTypeUtils.isVideoModel(activity.modelId!!)) {
+            chooseVideoView.setOnClickListener { v: View? -> chooseVideo() }
+        } else {
+            chooseVideoView.visibility = View.GONE
+        }
         val chooseAudioView = activity.findViewById<View>(R.id.more_item_audio)
-        if (ModelUtils.isAudioModel(activity.modelId!!)) {
+        if (ModelTypeUtils.isAudioModel(activity.modelId!!)) {
             chooseAudioView.setOnClickListener { v: View? -> chooseAudio() }
         } else {
             chooseAudioView.visibility = View.GONE
@@ -58,9 +71,22 @@ class AttachmentPickerModule(private val activity: ChatActivity) {
         voiceChatView.visibility = View.GONE
         attachmentPreview = activity.findViewById(R.id.image_preview)
         imagePreviewLayout = activity.findViewById(R.id.image_preview_layout)
+        imagePreviewRecycler = activity.findViewById(R.id.image_preview_recycler)
         imagePreviewDelete = activity.findViewById(R.id.image_preview_delete)
         selectAttachmentLayoutParent = activity.findViewById(R.id.layout_more_menu)
         imagePreviewDelete.setOnClickListener { v: View? -> deletePreviewImage() }
+
+        imagePreviewAdapter = ImagePreviewAdapter { uri ->
+            imagePreviewAdapter.removeImage(uri)
+            if (imagePreviewAdapter.itemCount == 0) {
+                hidePreview()
+            } else {
+                if (callback != null) {
+                    callback!!.onAttachmentPicked(imagePreviewAdapter.getImages(), AttachmentType.Image)
+                }
+            }
+        }
+        imagePreviewRecycler.adapter = imagePreviewAdapter
     }
 
     private fun deletePreviewImage() {
@@ -77,6 +103,7 @@ class AttachmentPickerModule(private val activity: ChatActivity) {
 
     private fun hidePreview() {
         imagePreviewLayout.visibility = View.GONE
+        imagePreviewRecycler.visibility = View.GONE
         imagePreviewDelete.visibility = View.GONE
         if (callback != null) {
             callback!!.onAttachmentRemoved()
@@ -109,11 +136,27 @@ class AttachmentPickerModule(private val activity: ChatActivity) {
     private fun chooseImageView() {
         val intent = Intent(Intent.ACTION_GET_CONTENT)
         intent.setType("image/*")
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
         activity.startActivityForResult(
             Intent.createChooser(intent, activity.getString(R.string.select_picture)),
             REQUEST_CODE_SELECT_IMAGE,
             null
         )
+    }
+
+    private fun chooseVideo() {
+        val intent = Intent(Intent.ACTION_GET_CONTENT)
+        intent.setType("video/*")
+        intent.addCategory(Intent.CATEGORY_OPENABLE)
+        try {
+            activity.startActivityForResult(
+                Intent.createChooser(intent, activity.getString(R.string.select_video)),
+                REQUEST_CODE_SELECT_VIDEO
+            )
+        } catch (ex: ActivityNotFoundException) {
+            Toast.makeText(this.activity, R.string.file_manager_required, Toast.LENGTH_SHORT)
+                .show()
+        }
     }
 
     private fun takePhoto() {
@@ -168,7 +211,8 @@ class AttachmentPickerModule(private val activity: ChatActivity) {
 
     fun canHandleResult(requestCode: Int): Boolean {
         return requestCode >= REQUEST_CODE_SELECT_WAV && requestCode <= REQUEST_CODE_CAPTURE_IMAGE ||
-               requestCode == REQUEST_CODE_CAMERA_PERMISSION
+               requestCode == REQUEST_CODE_CAMERA_PERMISSION ||
+               requestCode == REQUEST_CODE_SELECT_VIDEO
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -177,27 +221,62 @@ class AttachmentPickerModule(private val activity: ChatActivity) {
                 if (imageUri != null) {
                     val imagePath = imageUri?.path
                     Log.d("ImagePath", "Image saved to: $imagePath")
+                    imagePreviewAdapter.addImage(imageUri!!)
                     showImagePreview()
                 }
             }
             imageUri = null
         } else if (requestCode == REQUEST_CODE_SELECT_IMAGE) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                val uris = mutableListOf<Uri>()
+                if (data.clipData != null) {
+                    val count = data.clipData!!.itemCount
+                    for (i in 0 until count) {
+                        uris.add(data.clipData!!.getItemAt(i).uri)
+                    }
+                } else if (data.data != null) {
+                    uris.add(data.data!!)
+                }
+
+                if (uris.isNotEmpty()) {
+                    val processedUris = mutableListOf<Uri>()
+                    for (uri in uris) {
+                        try {
+                            val destImageFile = FileUtils.generateDestImageFilePath(
+                                this.activity,
+                                activity.sessionId!!
+                            )
+                            FileUtils.copyFileUriToPath(
+                                this.activity,
+                                uri,
+                                destImageFile
+                            )
+                            processedUris.add(Uri.fromFile(File(destImageFile)))
+                        } catch (e: IOException) {
+                            Log.e(TAG, "get file failed ", e)
+                        }
+                    }
+                    if (processedUris.isNotEmpty()) {
+                        imagePreviewAdapter.addImages(processedUris)
+                        showImagePreview()
+                    }
+                }
+            }
+        } else if (requestCode == REQUEST_CODE_SELECT_VIDEO) {
             if (resultCode == Activity.RESULT_OK) {
-                val uri = data!!.data
+                val videoUri = data!!.data
                 try {
-                    val destImageFile = FileUtils.generateDestImageFilePath(
+                    val destVideoPath = FileUtils.generateDestVideoFilePath(
                         this.activity,
                         activity.sessionId!!
                     )
-                    FileUtils.copyFileUriToPath(
-                        this.activity,
-                        uri!!,
-                        destImageFile
-                    )
-                    imageUri = Uri.fromFile(File(destImageFile))
-                    showImagePreview()
+                    val destFile =
+                        FileUtils.copyFileUriToPath(this.activity, videoUri!!, destVideoPath)
+                    showVideoPreview(Uri.fromFile(destFile))
                 } catch (e: IOException) {
-                    Log.e(TAG, "get file failed ", e)
+                    Log.e(TAG, "get video file failed", e)
+                    Toast.makeText(this.activity, R.string.video_file_failed, Toast.LENGTH_SHORT)
+                        .show()
                 }
             }
         } else if (requestCode == REQUEST_CODE_SELECT_WAV) {
@@ -236,19 +315,55 @@ class AttachmentPickerModule(private val activity: ChatActivity) {
         attachmentPreview.setImageResource(R.drawable.ic_audio_attachment)
         imagePreviewLayout.visibility = View.VISIBLE
         imagePreviewDelete.visibility = View.VISIBLE
+        imagePreviewRecycler.visibility = View.GONE
         hideAttachmentLayout()
         if (callback != null) {
-            callback!!.onAttachmentPicked(audioUri, AttachmentType.Audio)
+            callback!!.onAttachmentPicked(listOf(audioUri), AttachmentType.Audio)
+        }
+    }
+
+    private fun showVideoPreview(videoUri: Uri) {
+        activity.lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val thumbnail = com.alibaba.mnnllm.android.utils.VideoThumbnailUtils.generateVideoThumbnail(
+                    activity, videoUri, 200, 200
+                )
+                withContext(Dispatchers.Main) {
+                    if (thumbnail != null) {
+                        attachmentPreview.setImageBitmap(thumbnail)
+                    } else {
+                        attachmentPreview.setImageResource(R.drawable.ic_video)
+                    }
+                    imagePreviewLayout.visibility = View.VISIBLE
+                    imagePreviewDelete.visibility = View.VISIBLE
+                    imagePreviewRecycler.visibility = View.GONE
+                    hideAttachmentLayout()
+                    if (callback != null) {
+                        callback!!.onAttachmentPicked(listOf(videoUri), AttachmentType.Video)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    attachmentPreview.setImageResource(R.drawable.ic_video)
+                    imagePreviewLayout.visibility = View.VISIBLE
+                    imagePreviewDelete.visibility = View.VISIBLE
+                    imagePreviewRecycler.visibility = View.GONE
+                    hideAttachmentLayout()
+                    if (callback != null) {
+                        callback!!.onAttachmentPicked(listOf(videoUri), AttachmentType.Video)
+                    }
+                }
+            }
         }
     }
 
     private fun showImagePreview() {
-        attachmentPreview.setImageURI(imageUri)
-        imagePreviewLayout.visibility = View.VISIBLE
-        imagePreviewDelete.visibility = View.VISIBLE
+        imagePreviewRecycler.visibility = View.VISIBLE
+        imagePreviewLayout.visibility = View.GONE
+        imagePreviewDelete.visibility = View.GONE
         hideAttachmentLayout()
         if (callback != null) {
-            callback!!.onAttachmentPicked(imageUri, AttachmentType.Image)
+            callback!!.onAttachmentPicked(imagePreviewAdapter.getImages(), AttachmentType.Image)
         }
         imageUri = null
     }
@@ -281,11 +396,12 @@ class AttachmentPickerModule(private val activity: ChatActivity) {
     fun clearInput() {
         photoFile = null
         imageUri = null
+        imagePreviewAdapter.clear()
         hidePreview()
     }
 
     interface ImagePickCallback {
-        fun onAttachmentPicked(imageUri: Uri?, audio: AttachmentType?)
+        fun onAttachmentPicked(imageUris: List<Uri>?, audio: AttachmentType?)
         fun onAttachmentRemoved()
 
         fun onAttachmentLayoutShow()
@@ -294,7 +410,7 @@ class AttachmentPickerModule(private val activity: ChatActivity) {
     }
 
     enum class AttachmentType {
-        Image, Audio
+        Image, Audio, Video
     }
 
     companion object {
@@ -303,6 +419,7 @@ class AttachmentPickerModule(private val activity: ChatActivity) {
         const val REQUEST_CODE_CAMERA_PERMISSION: Int = 101
 
         var REQUEST_CODE_SELECT_IMAGE: Int = 99
+        var REQUEST_CODE_SELECT_VIDEO: Int = 97
         var REQUEST_CODE_SELECT_WAV: Int = 98
     }
 }

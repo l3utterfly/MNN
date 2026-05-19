@@ -7,8 +7,7 @@
 
 #include "llm/llm.hpp"
 #include "llmconfig.hpp"
-#include "prompt.hpp"
-#include "tokenizer.hpp"
+#include "tokenizer/tokenizer.hpp"
 #include "diskembedding.hpp"
 
 namespace MNN {
@@ -46,6 +45,12 @@ int Embedding::dim() const {
 }
 
 bool Embedding::load() {
+    MNN::Express::ExecutorScope s(mExecutor);
+    if (mConfig->config_.value("load_disk_embedding_only", false)) {
+        mDiskEmbedding.reset(new DiskEmbedding(mConfig));
+        return true;
+    }
+
     initRuntime();
     printf("load tokenizer\n");
     std::cout << mConfig->tokenizer_file() << std::endl;
@@ -53,6 +58,7 @@ bool Embedding::load() {
     mTokenizer.reset(Tokenizer::createTokenizer(mConfig->tokenizer_file()));
     printf("load tokenizer Done\n");
     mDiskEmbedding.reset(new DiskEmbedding(mConfig));
+    setChatTemplate();
     // 2. load model
     Module::Config module_config;
     if(mConfig->backend_type() == "npu") {
@@ -69,23 +75,36 @@ bool Embedding::load() {
         return false;
     }
     MNN_PRINT("Done!\n");
+    mContext->status = LlmStatus::RUNNING;  // Set status to RUNNING after successful load
     return true;
 }
 
-std::vector<Express::VARP> Embedding::forwardRaw(Express::VARP hiddenState, Express::VARP mask, Express::VARP inputPos) {
+std::vector<Express::VARP> Embedding::forwardRaw(Express::VARP hiddenState, Express::VARP mask, Express::VARP inputPos, Express::VARPS extraArgs) {
+    MNN::Express::ExecutorScope s(mExecutor);
     return mModule->onForward({hiddenState, mask, inputPos});
 }
 
 VARP Embedding::ids_embedding(const std::vector<int>& ids) {
+    // Check if already in error state
+    if(mContext->status == LlmStatus::INTERNAL_ERROR) {
+        return nullptr;
+    }
+    
     int prompt_len           = ids.size();
     auto inputs_ids          = embedding(ids);
     auto attention_mask      = gen_attention_mask(prompt_len);
     auto position_ids        = gen_position_ids(prompt_len);
-    return forwardRaw(inputs_ids, attention_mask, position_ids)[0];
+    auto outputs = forwardRaw(inputs_ids, attention_mask, position_ids);
+    if(outputs.empty()) {
+        return nullptr;
+    }
+    return outputs[0];
 }
 
 VARP Embedding::txt_embedding(const std::string& txt) {
-    return ids_embedding(tokenizer_encode(txt));
+    CHECK_LLM_RUNNING_RET(mContext, nullptr);
+    auto prompt = apply_chat_template(txt);
+    return ids_embedding(tokenizer_encode(prompt));
 }
 
 VARP Embedding::gen_attention_mask(int seq_len) {

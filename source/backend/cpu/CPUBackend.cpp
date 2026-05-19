@@ -104,15 +104,14 @@ void CPURuntime::_bindCPUCore() const {
 #ifdef MNN_USE_THREAD_POOL
     if (nullptr != mThreadPool) {
         mThreadPool->active();
-        mThreadPool->enqueue(std::make_pair([&](int i) {
+        ThreadPool::TASK task = std::make_pair([&](int i) {
             MNNSetSchedAffinity(lockCPUIndexes[i].first, lockCPUIndexes[i].second);
-            return 0;
-        }, mThreadNumber), mTaskIndex);
+        }, mThreadNumber);
+        mThreadPool->enqueue(&task, mTaskIndex);
         mThreadPool->deactive();
     }
 #endif
 }
-
 void CPURuntime::_resetThreadPool() const {
     mThreadNumber = std::max(1, mThreadNumber);
     mThreadNumber = std::min(mThreadNumber, MAX_THREAD_NUMBER);
@@ -290,15 +289,17 @@ Backend* CPURuntime::onCreate(const BackendConfig* config, Backend* origin) cons
         prefix[6] += mPower;
         // prefix += hint().modelUUID + "_";
         bool autoRemove = true;
+        bool syncValid = false;
         if (hint().useCachedMmap) {
             autoRemove = false;
             std::string fileName = MNNFilePathConcat(hint().weightMemoryPath, prefix + "sync.static");
-            const_cast<RuntimeHint&>(hint()).useCachedMmap += MNNFileExist(fileName.c_str());
+            syncValid = MNNFileExist(fileName.c_str());
+            const_cast<RuntimeHint&>(hint()).useCachedMmap += syncValid;
         }
         if (nullptr == mStaticAllocatorMMap.get()) {
             // Only support set weightmap dir once
             mStaticAllocatorRaw = mStaticAllocator;
-            auto mmapMem = BufferAllocator::Allocator::createMmap(hint().weightMemoryPath.c_str(), prefix.c_str(), "static", autoRemove);
+            auto mmapMem = BufferAllocator::Allocator::createMmap(hint().weightMemoryPath.c_str(), prefix.c_str(), "static", autoRemove, syncValid);
             size_t mmapSize = static_cast<size_t>(hint().mmapFileSize) * 1024 * 1024;
             mStaticAllocator.reset(new EagerBufferAllocator(mmapMem, 32, mmapSize));
             mStaticAllocatorMMap = mStaticAllocator;
@@ -326,11 +327,7 @@ Backend* CPURuntime::onCreate(const BackendConfig* config, Backend* origin) cons
         auto core = MNNGetCoreFunctions();
         if (core->supportFp16arith && precision == BackendConfig::Precision_Low) {
             res = new Arm82Backend(this, memory);
-            if (hint().useArmSme2Cores && res->threadNumber() <= 2 && core->supportSME2 && res->functions()->sme2Int8MatmulRelatedFuncionsHp32.Int8GemmKernel) {
-                res->mRelatedFunctions = &(res->functions()->sme2Int8MatmulRelatedFuncionsHp32);
-            } else {
-                res->mRelatedFunctions = &(res->functions()->int8MatmulRelatedFunctions);
-            }
+            res->mRelatedFunctions = &(res->functions()->int8MatmulRelatedFunctions);
             break;
         }
 #endif
@@ -458,12 +455,8 @@ CPUBackend::CPUBackend(const CPURuntime* runtime, BackendConfig::PrecisionMode p
     mRuntime = const_cast<CPURuntime*>(runtime);
     auto core = MNNGetCoreFunctions();
     mThreadNumber = mRuntime->mThreadNumber;
-    if (mRuntime->hint().useArmSme2Cores && core->supportSME2 && core->sme2Int8MatmulRelatedFuncionsHp32.Int8GemmKernel) {
-        mThreadNumber = ALIMIN(2, mThreadNumber);
-        mRelatedFunctions = &core->sme2Int8MatmulRelatedFuncionsHp32;
-    } else {
-        mRelatedFunctions = &core->int8MatmulRelatedFunctions;
-    }
+    mRelatedFunctions = &core->int8MatmulRelatedFunctions;
+
     // Compute Group Rate
     do {
         if (mThreadNumber <= 1 || mRuntime->mPower == BackendConfig::Power_Low) {
@@ -499,6 +492,7 @@ CPUBackend::CPUBackend(const CPURuntime* runtime, BackendConfig::PrecisionMode p
             currentRate *= decreaseRate;
             totalComputeRate += currentRate * selectSize;
             mGroupWithComputeRate.emplace_back(std::make_pair(currentRate * selectSize, selectSize));
+            groupIndex--;
         }
         for (auto& g : mGroupWithComputeRate) {
             g.first = g.first / totalComputeRate;
@@ -627,8 +621,8 @@ Backend::MemObj* CPUBackend::allocBuffer(size_t size, Tensor* dest, StorageType 
     }
     if (chunk.ptr()) {
         buffer.host = chunk.ptr();
-    }
-    des->extra.offset = 0;
+     }
+    TensorUtils::getDescribeOrigin(dest)->offset = 0;
     return res;
 }
 
@@ -656,12 +650,6 @@ static OpType _getRealOpType(OpType opType) {
             return OpType_ConvInt8;
         case OpType_ConvolutionDepthwise:
             return OpType_DepthwiseConvInt8;
-        case OpType_Pooling:
-            return OpType_PoolInt8;
-
-        // case OpType_Eltwise:
-        //     // TODO: just support EltwiseAdd
-        //     return OpType_EltwiseInt8;
         default:
             return opType;
     }
@@ -674,6 +662,10 @@ void* CPUBackend::onMapTensor(Tensor::MapType mtype, Tensor::DimensionType dtype
         return nullptr;
     }
     _resetDynamicMemory();
+    if (mRuntime->pCurrentStatus != NO_ERROR) {
+        // Out of memory
+        return nullptr;
+    }
     return srcTensor->host<void>();
 }
 
@@ -785,6 +777,10 @@ std::pair<int, int> CPUBackend::multiThreadDivide(int size) const {
 }
 void CPUBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTensor) const {
     _resetDynamicMemory();
+    if (mRuntime->pCurrentStatus != NO_ERROR) {
+        // Out of memory
+        return;
+    }
     auto& srcBuffer = srcTensor->buffer();
     auto& dstBuffer = dstTensor->buffer();
     if (srcBuffer.dimensions != dstBuffer.dimensions ) {
@@ -874,7 +870,7 @@ public:
             case OpType_Raster:
             {
                 for (auto input : inputs) {
-                    if (TensorUtils::getDescribe(input)->quantAttr.get() != TensorUtils::getDescribe(outputs[0])->quantAttr.get()) {
+                    if (TensorUtils::getDescribe(input)->quantAttr->scale != TensorUtils::getDescribe(outputs[0])->quantAttr->scale || TensorUtils::getDescribe(input)->quantAttr->zero != TensorUtils::getDescribe(outputs[0])->quantAttr->zero) {
                         return false;
                     }
                     if (TensorUtils::getDescribe(input)->quantAttr.get() && TensorUtils::getDescribe(outputs[0])->quantAttr.get() && (TensorUtils::getDescribe(input)->quantAttr.get()->scale == 0 || TensorUtils::getDescribe(outputs[0])->quantAttr.get()->scale == 0)) {
@@ -884,6 +880,9 @@ public:
                 return true;
             }
             case OpType_Pooling:
+                if (TensorUtils::getDescribe(inputs[0])->quantAttr->scale != TensorUtils::getDescribe(outputs[0])->quantAttr->scale || TensorUtils::getDescribe(inputs[0])->quantAttr->zero != TensorUtils::getDescribe(outputs[0])->quantAttr->zero) {
+                    return false;
+                }
                 if (op->main_as_Pool() && op->main_as_Pool()->type() == PoolType_MAXPOOL ) {
                     return true;
                 } else if (op->main_as_Pool() && op->main_as_Pool()->type() == PoolType_AVEPOOL) {

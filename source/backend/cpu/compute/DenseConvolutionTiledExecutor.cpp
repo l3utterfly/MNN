@@ -14,6 +14,7 @@
 #include "ConvOpt.h"
 #include "core/Macro.h"
 #include "core/TensorUtils.hpp"
+#include "half.hpp"
 #include "math/Vec.hpp"
 #include "core/BufferAllocator.hpp"
 #include "core/MemoryFormater.h"
@@ -36,11 +37,11 @@ bool DenseConvolutionTiledExecutor::initQuantizeResource(std::shared_ptr<Convolu
     resource->hP = hP;
     MNN_ASSERT(lP == 1);
     // Save scale bias
-    int dequantCnt = int8Info->alpha.size();
+    int dequantCnt = int8Info->alphaSize;
     int scaleSize = dequantCnt; // real size
     if (int8Info->asymmetric) {
         scaleSize = dequantCnt / 2;
-        
+
     }
     int blockNum = scaleSize / outputCount;
     scaleSize = blockNum * hU * hP; // pack size
@@ -93,38 +94,72 @@ bool DenseConvolutionTiledExecutor::initQuantizeResource(std::shared_ptr<Convolu
     auto alphaPtr = resource->mDequantize.mScaleBias->host<float>();
     auto biasPtr = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(alphaPtr) + scaleSize * bytes);
     ::memset(alphaPtr, 0, 2 * scaleSize * bytes);
-    int h = int8Info->alpha.size();
     if (bytes == 2) {
-        auto core = static_cast<CPUBackend*>(resource->backend)->functions();
-        std::vector<float> tmpAlpha(scaleSize * 2, 0.0f);
-        if (int8Info->asymmetric) {
-            for (int i = 0; i < blockNum; ++i) {
-                auto dstAlpha = tmpAlpha.data() + i * hU * hP;
-                auto srcAlpha = int8Info->alpha.get();
-                for (int j = 0; j < outputCount; ++j) {
-                    int scaleIndex = j * blockNum + i;
-                    dstAlpha[j] = srcAlpha[2 * scaleIndex + 1];
-                    dstAlpha[j + scaleSize] = srcAlpha[2 * scaleIndex] + (float)originOffset * dstAlpha[j];
+        auto cpuBackend = static_cast<CPUBackend*>(resource->backend);
+        auto core = cpuBackend->functions();
+        // Optimal path: disk alpha is fp16 AND backend is fp16 (Precision_Low).
+        // Read fp16 raw bits directly and write fp16 to mScaleBias, skipping the
+        // fp32 round-trip and the bulk MNNFp32ToLowp call.
+        const bool nativeFp16 = int8Info->alphaIsFp16 && cpuBackend->precisionMode() == BackendConfig::Precision_Low;
+        if (nativeFp16) {
+            auto srcHalf = reinterpret_cast<const half_float::half*>(int8Info->getAlphaHalf());
+            auto dstHalf = reinterpret_cast<half_float::half*>(alphaPtr);
+            const half_float::half offsetH(static_cast<float>(originOffset));
+            if (int8Info->asymmetric) {
+                for (int i = 0; i < blockNum; ++i) {
+                    auto dstAlpha = dstHalf + i * hU * hP;
+                    auto dstBias = dstHalf + scaleSize + i * hU * hP;
+                    for (int j = 0; j < outputCount; ++j) {
+                        int scaleIndex = j * blockNum + i;
+                        dstAlpha[j] = srcHalf[2 * scaleIndex + 1];
+                        dstBias[j] =
+                            half_float::half(float(srcHalf[2 * scaleIndex]) + float(offsetH) * float(dstAlpha[j]));
+                    }
+                }
+            } else {
+                for (int i = 0; i < blockNum; ++i) {
+                    auto dstAlpha = dstHalf + i * hU * hP;
+                    auto dstBias = dstHalf + scaleSize + i * hU * hP;
+                    for (int j = 0; j < outputCount; ++j) {
+                        int scaleIndex = j * blockNum + i;
+                        dstAlpha[j] = srcHalf[scaleIndex];
+                        dstBias[j] = half_float::half(float(offsetH) * float(dstAlpha[j]));
+                    }
                 }
             }
         } else {
-            for (int i = 0; i < blockNum; ++i) {
-                auto dstAlpha = tmpAlpha.data() + i * hU * hP;
-                auto srcAlpha = int8Info->alpha.get();
-                for (int j = 0; j < outputCount; ++j) {
-                    int scaleIndex = j * blockNum + i;
-                    dstAlpha[j] = srcAlpha[scaleIndex];
-                    dstAlpha[j + scaleSize] = (float)originOffset * dstAlpha[j];
+            // bf16 backend, or fp32 disk alpha: keep fp32 reshuffle + MNNFp32ToLowp.
+            // getAlphaFloat() lazy-fills alpha from alphaHalf if needed.
+            auto srcAlpha = int8Info->getAlphaFloat();
+            std::vector<float> tmpAlpha(scaleSize * 2, 0.0f);
+            if (int8Info->asymmetric) {
+                for (int i = 0; i < blockNum; ++i) {
+                    auto dstAlpha = tmpAlpha.data() + i * hU * hP;
+                    for (int j = 0; j < outputCount; ++j) {
+                        int scaleIndex = j * blockNum + i;
+                        dstAlpha[j] = srcAlpha[2 * scaleIndex + 1];
+                        dstAlpha[j + scaleSize] = srcAlpha[2 * scaleIndex] + (float)originOffset * dstAlpha[j];
+                    }
+                }
+            } else {
+                for (int i = 0; i < blockNum; ++i) {
+                    auto dstAlpha = tmpAlpha.data() + i * hU * hP;
+                    for (int j = 0; j < outputCount; ++j) {
+                        int scaleIndex = j * blockNum + i;
+                        dstAlpha[j] = srcAlpha[scaleIndex];
+                        dstAlpha[j + scaleSize] = (float)originOffset * dstAlpha[j];
+                    }
                 }
             }
+            core->MNNFp32ToLowp(tmpAlpha.data(), reinterpret_cast<int16_t*>(alphaPtr), scaleSize * 2);
         }
-        core->MNNFp32ToLowp(tmpAlpha.data(), reinterpret_cast<int16_t*>(alphaPtr), scaleSize * 2);
     } else {
+        // fp32 backend. getAlphaFloat() lazy-fills alpha from alphaHalf if disk was fp16.
+        auto srcAlpha = int8Info->getAlphaFloat();
         if (int8Info->asymmetric) {
             for (int i = 0; i < blockNum; ++i) {
                 auto dstAlpha = alphaPtr + i * hU * hP;
-                auto dstBias  = biasPtr + i * hU * hP;
-                auto srcAlpha = int8Info->alpha.get();
+                auto dstBias = biasPtr + i * hU * hP;
                 for (int j = 0; j < outputCount; ++j) {
                     int scaleIndex = j * blockNum + i;
                     dstAlpha[j] = srcAlpha[2 * scaleIndex + 1];
@@ -134,8 +169,7 @@ bool DenseConvolutionTiledExecutor::initQuantizeResource(std::shared_ptr<Convolu
         } else {
             for (int i = 0; i < blockNum; ++i) {
                 auto dstAlpha = alphaPtr + i * hU * hP;
-                auto dstBias  = biasPtr + i * hU * hP;
-                auto srcAlpha = int8Info->alpha.get();
+                auto dstBias = biasPtr + i * hU * hP;
                 for (int j = 0; j < outputCount; ++j) {
                     int scaleIndex = j * blockNum + i;
                     dstAlpha[j] = srcAlpha[scaleIndex];
@@ -304,10 +338,10 @@ ErrorCode ConvolutionTiledExecutorMultiInput::onResize(const std::vector<Tensor*
     if (!res) {
         return OUT_OF_MEMORY;
     }
-    if (inputs.size() > 2 && inputs[2]->elementSize() % hP == 0) {
+    if (inputs.size() > 2 && inputs[2]->elementSize() % function->pack == 0) {
         mInputs = {inputs[0], mTempWeight.get(), inputs[2]};
     } else {
-        auto hPackedSize = ALIMAX(hP, function->pack);
+        auto hPackedSize = function->pack;
         mTempBias.reset(Tensor::createDevice<float>({UP_DIV(outputCount, hPackedSize) * hPackedSize}));
         backend()->onAcquireBuffer(mTempBias.get(), Backend::DYNAMIC);
         mInputs = {inputs[0], mTempWeight.get(), mTempBias.get()};
@@ -469,7 +503,7 @@ ErrorCode DenseConvolutionTiledImpl::onResize(const std::vector<Tensor*>& inputs
     auto output      = outputs[0];
     auto batch       = output->batch();
     int threadNumber = ((CPUBackend *)backend())->threadNumber();
-    
+
     int  LRoundup = ROUND_UP(L, lP);
     int  LRoundupC4 = UP_DIV(LRoundup, unit);
     auto outputChannel = output->channel();
@@ -501,14 +535,14 @@ ErrorCode DenseConvolutionTiledImpl::onResize(const std::vector<Tensor*>& inputs
     bufferAlloc->free(tempPtr);
 
     auto postParameters    = getPostParameters();
-    mFunction.first        = threadNumber;
+    mFunction.second        = threadNumber;
 
     if (mConvPerfconfig.isParallelInner) {
         auto rt = static_cast<const CPURuntime*>(backend()->getRuntime());
         std::vector<int> ocC4ParralSize(threadNumber + 1);
         ocC4ParralSize[0] = 0;
         static_cast<CPUBackend *>(backend())->computeDivideSizes(oC4, ocC4ParralSize.data()+1);
-        mFunction.second = [=](int placeholder) {
+        mFunction.first = [=](int placeholder) {
         const float* biasPtr = bias ? bias->host<float>() : nullptr;
         auto gemmBuffer = mTempBufferTranspose.host<uint8_t>() + mTempBufferTranspose.stride(0) * 0;
         auto srcPtr     = (float const **)(tempPtr.ptr() + 0 * kernelSize * maxLine * (4 * sizeof(int32_t) + sizeof(float *)));
@@ -523,7 +557,7 @@ ErrorCode DenseConvolutionTiledImpl::onResize(const std::vector<Tensor*>& inputs
         info[3] = mIm2ColParameters.strideX;
         size_t shapeParameters[PARAMETERSIZE];
         size_t* parameters = shapeParameters;
-        parameters[0]          = eP * bytes;
+        parameters[0]          = eP * lP * bytes;
         parameters[1]          = blockSize;
         parameters[2]          = outputChannel;
         parameters[3]          = plane * unit * bytes;
@@ -640,7 +674,7 @@ ErrorCode DenseConvolutionTiledImpl::onResize(const std::vector<Tensor*>& inputs
 
         static_cast<CPUBackend *>(backend())->computeDivideSizes(tileCount, divides.data() + 1);
 
-        mFunction.second       = [=](int tId) {
+        mFunction.first       = [=](int tId) {
             const float* biasPtr = bias ? bias->host<float>() : nullptr;
             auto gemmBuffer = mTempBufferTranspose.host<uint8_t>() + mTempBufferTranspose.stride(0) * tId;
             auto srcPtr     = (float const **)(tempPtr.ptr() + tId * kernelSize * maxLine * (4 * sizeof(int32_t) + sizeof(float *)));
@@ -651,7 +685,7 @@ ErrorCode DenseConvolutionTiledImpl::onResize(const std::vector<Tensor*>& inputs
             info[2] = eP;
             info[3] = mIm2ColParameters.strideX;
             size_t parameters[PARAMETERSIZE];
-            parameters[0]          = eP * bytes;
+            parameters[0]          = eP * lP *  bytes;
             parameters[1]          = blockSize;
             parameters[2]          = outputChannel;
             parameters[3]          = plane * unit * bytes;
@@ -678,14 +712,6 @@ ErrorCode DenseConvolutionTiledImpl::onResize(const std::vector<Tensor*>& inputs
                 if (number > 0) {
                     packA((float *)gemmBuffer, srcPtr, info, el);
                 }
-                /*
-                for (int kk=0; kk < mIm2ColParameters.kernelX *  mIm2ColParameters.kernelY; ++kk) {
-                    for (int xx=0; xx < ROUND_UP(input->channel(), lP) * eP; ++xx) {
-                        printf("%f ", ((__fp16*)gemmBuffer)[kk * ROUND_UP(input->channel(), lP) * eP + xx]);
-                        if (xx % (eP * lP) == (eP * lP -1)) printf("\n");
-                    }
-                }
-*/
                 int finishedL = 0;
                 int wquantStride = 0;
                 int8_t* _weightPtr = reinterpret_cast<int8_t*>(weightPtr);
@@ -702,7 +728,7 @@ ErrorCode DenseConvolutionTiledImpl::onResize(const std::vector<Tensor*>& inputs
                         }
                         finishedL = blockSize * bk;
                         wquantStride = static_cast<int32_t>(blockSize * bk * hP * halfStride);
-                        
+
                         matmulUnit(_dstFloatPtr, (float*)(gemmBuffer + bytes * eP * finishedL), (float*)(_weightPtr + wquantStride), parameters, relufp32, exeBiasPtr, (float*)(dequantAlpha + bk * ocUp4 * bytes), (float*)(dequantBias + bk * ocUp4 * bytes));
                     }
                 } else {
@@ -714,7 +740,7 @@ ErrorCode DenseConvolutionTiledImpl::onResize(const std::vector<Tensor*>& inputs
                         }
                         finishedL = blockSize * bk;
                         wquantStride = static_cast<int32_t>(blockSize * bk * hP * halfStride);
-                        
+
                         matmulRemain(_dstFloatPtr, (float*)(gemmBuffer + eP * bytes * finishedL), (float*)(_weightPtr + wquantStride), xC, parameters, relufp32, exeBiasPtr, (float*)(dequantAlpha + bk * ocUp4 * bytes), (float*)(dequantBias + bk * ocUp4 * bytes ));
                     }
                     // matmulRemain(_dstFloatPtr, (float*)gemmBuffer, (float*)weightPtr, xC, parameters, postParameters.data(), biasPtr, k, b);
@@ -728,12 +754,9 @@ ErrorCode DenseConvolutionTiledImpl::onResize(const std::vector<Tensor*>& inputs
 ErrorCode DenseConvolutionTiledImpl::onExecute(const std::vector<Tensor*>& inputs,
                                           const std::vector<Tensor*>& outputs) {
     if (mConvPerfconfig.isParallelInner) {
-        mFunction.second(0);
+        mFunction.first(0);
     } else {
-        MNN_CONCURRENCY_BEGIN(tId, mFunction.first) {
-            mFunction.second((int)tId);
-        }
-        MNN_CONCURRENCY_END();
+        MNN_CONCURRENCY_ENQUEUE(mFunction);
     }
 
     return NO_ERROR;

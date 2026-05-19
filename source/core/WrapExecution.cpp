@@ -19,7 +19,7 @@
 namespace MNN {
 bool WrapExecution::needWrap(const Tensor* input, Backend* curBackend) {
     auto curType = curBackend ? curBackend->type() : MNN_FORWARD_CPU;
-    if (curType == MNN_FORWARD_NN) {
+    if (curType == MNN_FORWARD_NN || curType >= MNN_CONVERT_QNN) {
         return false;
     }
     auto des = TensorUtils::getDescribeOrigin(input);
@@ -180,6 +180,7 @@ Tensor* WrapExecution::copyConstCache(Tensor* t, Backend* curBackend, std::map<T
 void WrapExecution::copyReplaceTensor(const Tensor* wrapTensor, Tensor* t) {
     TensorUtils::getDescribeOrigin(t)->mContent = TensorUtils::getDescribeOrigin(wrapTensor)->mContent;
     TensorUtils::getDescribeOrigin(t)->mem = TensorUtils::getDescribeOrigin(wrapTensor)->mem;
+    TensorUtils::getDescribeOrigin(t)->offset = TensorUtils::getDescribeOrigin(wrapTensor)->offset;
     TensorUtils::getDescribeOrigin(t)->setBackend( TensorUtils::getDescribeOrigin(wrapTensor)->getBackend());
     t->buffer().host = wrapTensor->buffer().host;
     t->buffer().device = wrapTensor->buffer().device;

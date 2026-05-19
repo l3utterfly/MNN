@@ -87,13 +87,6 @@ struct Tensor::InsideDescribe {
     public:
         /** dimension format */
         MNN_DATA_FORMAT dimensionFormat = MNN_DATA_FORMAT_NC4HW4;
-        union {
-            /** Serperate memory offset*/
-            int offset;
-
-            /** function used to free handle */
-            void (*handleFreeFunction)(void*);
-        } extra;
         MemoryType memoryType = MEMORY_BACKEND;
         std::weak_ptr<Command> rasterCommand;
         /** for DEVICE tensor only. */
@@ -107,6 +100,7 @@ struct Tensor::InsideDescribe {
         std::shared_ptr<QuantAttr> quantAttr;
         bool applyQuant = false;
         bool isMutable = true;
+        bool overlap = false; // Only used by strideSliceWrite now
         int index = -1;
         int group = 0;
 		int channel_pack_num = 4;
@@ -119,6 +113,7 @@ struct Tensor::InsideDescribe {
     };
     std::shared_ptr<NativeInsideDescribe> mContent;
     SharedPtr<Backend::MemObj> mem;
+    int offset = 0;
     inline Backend* getBackend() const {
         return backend;
     }
@@ -183,6 +178,7 @@ public:
 
     static void setupTensorInfo(const Tensor* tensor, Tensor* wrapTensor, MNN_DATA_FORMAT mMidFormat);
     static Tensor::InsideDescribe::Region makeFullSlice(Tensor* input);
+    static void makeFullRef(Tensor* output, Tensor* input);
     static bool regionIsFull(Tensor* input);
     static bool isCopyRegion(const Tensor::InsideDescribe::Region& region);
     static bool isTransposeRegion(const Tensor::InsideDescribe::Region& region);

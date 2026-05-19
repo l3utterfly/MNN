@@ -1,24 +1,16 @@
 package com.alibaba.mnnllm.api.openai.manager
 
 import android.content.Context
-import com.alibaba.mnnllm.api.openai.service.OpenAIService
+import com.alibaba.mnnllm.api.openai.network.compat.EndpointUrlBuilder
 import com.alibaba.mnnllm.api.openai.service.ApiServerConfig
-import com.alibaba.mnnllm.api.openai.manager.ServerEventManager
+import com.alibaba.mnnllm.api.openai.service.OpenAIService
 import timber.log.Timber
 
-/**
- * API服务管理器，为UI层提供统一的API服务管理接口
- * 封装了服务启动、停止、状态查询等操作
- */
+/** * APIservicemanager,asUIlayerprovideunifiedAPIservicemanaginginterface * encapsulateservicestart, stop,statequeryetc.operations*/
 object ApiServiceManager {
     private val TAG = this::class.java.simpleName
-    
-    /**
-     * 启动API服务
-     * @param context 上下文，必须是ChatActivity实例
-     * @param modelId 当前模型ID
-     * @return 是否成功启动
-     */
+
+    /** * startAPIservice * @param context context，must beChatActivityinstance * @param modelId currentmodelID * @return whethersuccessstart*/
     fun startApiService(context: Context, modelId: String? = null): Boolean {
         return try {
             OpenAIService.startService(context, modelId)
@@ -29,12 +21,8 @@ object ApiServiceManager {
             false
         }
     }
-    
-    /**
-     * 停止API服务
-     * @param context 上下文
-     * @return 是否成功停止
-     */
+
+    /** * stopAPIservice * @param context context * @return whethersuccessstop*/
     fun stopApiService(context: Context): Boolean {
         return try {
             OpenAIService.releaseService(context)
@@ -45,18 +33,12 @@ object ApiServiceManager {
             false
         }
     }
-    
-    /**
-     * 重启API服务
-     * @param context 上下文
-     * @return 是否成功重启
-     */
+
+    /** * restartAPIservice * @param context context * @return whethersuccessrestart
+     * Note: Do not call from main thread. Use lifecycleScope.launch { stop+delay+start } instead. */
     fun restartApiService(context: Context): Boolean {
         return try {
             stopApiService(context)
-            // 重置ServerEventManager状态
-          //  ServerEventManager.getInstance().resetRuntimeState()
-            // 给一点时间让服务完全停止
             Thread.sleep(500)
             startApiService(context)
         } catch (e: Exception) {
@@ -64,11 +46,8 @@ object ApiServiceManager {
             false
         }
     }
-    
-    /**
-     * 检查API服务状态
-     * 使用ServerEventManager获取准确的服务器状态
-     */
+
+    /** * checkAPIservicestate * useServerEventManagergetaccurateservicestate*/
     fun isApiServiceRunning(): Boolean {
         return try {
             ServerEventManager.getInstance().isServerRunning()
@@ -77,10 +56,8 @@ object ApiServiceManager {
             false
         }
     }
-    
-    /**
-     * 检查API服务是否就绪
-     */
+
+    /** * checkAPIservicewhetherready*/
     fun isApiServiceReady(): Boolean {
         return try {
             ServerEventManager.getInstance().isServerReady()
@@ -89,42 +66,29 @@ object ApiServiceManager {
             false
         }
     }
-    
-    /**
-     * 获取服务器状态
-     */
+
+    /** * getservicestate*/
     fun getServerState(): ServerEventManager.ServerState {
         return ServerEventManager.getInstance().getCurrentState()
     }
-    
-    /**
-     * 获取服务器信息
-     */
+
+    /** * getserviceinfo*/
     fun getServerInfo(): ServerEventManager.ServerInfo {
         return ServerEventManager.getInstance().getCurrentInfo()
     }
-    
-    /**
-     * 获取API服务端口
-     * @param context 上下文，用于获取配置
-     * @return 服务端口
-     */
+
+    /** * getAPIserviceport * @param context context，forgetconfig * @return serviceport*/
     fun getApiServicePort(context: Context): Int {
-        // 确保配置已初始化
         ApiServerConfig.initializeConfig(context)
         return ApiServerConfig.getPort(context)
     }
-    
-    /**
-     * 获取API服务基础URL
-     * @param context 上下文，用于获取配置
-     * @return 服务基础URL
-     */
+
+    /** * getAPIservicebaseURL * @param context context，forgetconfig * @return servicebaseURL*/
     fun getApiServiceBaseUrl(context: Context): String {
-        // 确保配置已初始化
         ApiServerConfig.initializeConfig(context)
         val port = ApiServerConfig.getPort(context)
         val ipAddress = ApiServerConfig.getIpAddress(context)
-        return "http://$ipAddress:$port"
+        val useHttps = ApiServerConfig.useHttpsUrl(context)
+        return EndpointUrlBuilder.buildBaseUrl(ipAddress, port, useHttps)
     }
 }

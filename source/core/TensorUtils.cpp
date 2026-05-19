@@ -32,6 +32,18 @@ bool TensorUtils::regionIsFull(Tensor* input) {
     return regionSize == size;
 }
 
+void TensorUtils::makeFullRef(Tensor* output, Tensor* input) {
+    auto des = TensorUtils::getDescribe(input);
+    auto outputDes = TensorUtils::getDescribe(output);
+    outputDes->memoryType = Tensor::InsideDescribe::MEMORY_VIRTUAL;
+    if (des->memoryType == Tensor::InsideDescribe::MEMORY_VIRTUAL) {
+        outputDes->regions = des->regions;
+    } else {
+        outputDes->regions = {makeFullSlice(input)};
+    }
+}
+
+
 Tensor::InsideDescribe::Region TensorUtils::makeFullSlice(Tensor* input) {
     Tensor::InsideDescribe::Region totalSlice;
     totalSlice.src.offset = 0;
@@ -465,12 +477,12 @@ bool TensorUtils::refTensorContent(Tensor* dst, const Tensor* src) {
     auto srcDes = TensorUtils::getDescribe(src);
     auto desO = TensorUtils::getDescribeOrigin(dst);
     auto srcDesO = TensorUtils::getDescribeOrigin(src);
-    bool needMalloc = dst->buffer().host != src->buffer().host || dst->buffer().device != src->buffer().device || des->extra.offset != srcDes->extra.offset;
+    bool needMalloc = dst->buffer().host != src->buffer().host || dst->buffer().device != src->buffer().device || desO->offset != srcDesO->offset;
     desO->setBackend(srcDesO->getBackend());
     dst->buffer().host = src->buffer().host;
     dst->buffer().device = src->buffer().device;
     dst->buffer().flags = src->buffer().flags;
-    des->extra.offset = srcDes->extra.offset;
+    desO->offset = srcDesO->offset;
     des->group = -1;
     return needMalloc;
 }

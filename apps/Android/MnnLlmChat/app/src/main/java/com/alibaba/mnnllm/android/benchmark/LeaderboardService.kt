@@ -34,6 +34,7 @@ class LeaderboardService {
         private const val DEFAULT_USER_ID = "anonymous"
     }
     
+
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)

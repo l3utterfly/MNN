@@ -17,7 +17,7 @@ static const char* gCastTemplate =
         R"glsl(
     #include <metal_stdlib>
     using namespace metal;
-    kernel void main0(const device T0 *in [[buffer(0)]],
+    kernel void cast(const device T0 *in [[buffer(0)]],
                                 device T1 *out      [[buffer(1)]],
                                 device uint4& s   [[buffer(2)]],
                                 uint3 gid               [[thread_position_in_grid]]) {
@@ -58,8 +58,8 @@ void MetalCast::onEncode(const std::vector<Tensor *> &inputs, const std::vector<
     auto context = (__bridge MNNMetalContext *)backend->context();
     auto input = inputs[0], output = outputs[0];
     [encoder setComputePipelineState:mPipeline];
-    [encoder setBuffer:(id<MTLBuffer>)((MetalRuntimeAllocator::MetalBufferAlloc *)input->deviceId())->getBuffer() offset:TensorUtils::getDescribe(input)->extra.offset atIndex:0];
-    [encoder setBuffer:(id<MTLBuffer>)((MetalRuntimeAllocator::MetalBufferAlloc *)output->deviceId())->getBuffer() offset:TensorUtils::getDescribe(output)->extra.offset atIndex:1];
+    [encoder setBuffer:(id<MTLBuffer>)((MetalRuntimeAllocator::MetalBufferAlloc *)input->deviceId())->getBuffer() offset:TensorUtils::getDescribeOrigin(input)->offset atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)((MetalRuntimeAllocator::MetalBufferAlloc *)output->deviceId())->getBuffer() offset:TensorUtils::getDescribeOrigin(output)->offset atIndex:1];
     [encoder setBuffer:mConstBuffer offset:0 atIndex:2];
     [encoder dispatchThreadgroups:mThreads.first threadsPerThreadgroup:mThreads.second];
 }
@@ -206,7 +206,7 @@ public:
                 @"T1" : T1,
                 @"TRANSOFRM" : TRANSOFRM
             };
-            pipeline = mtbn->makeComputePipelineWithSourceOption(gCastTemplate, "main0", compileOptions);
+            pipeline = mtbn->makeComputePipelineWithSourceOption(gCastTemplate, "cast", compileOptions);
             mtbn->runtime()->insertPipeline(keys, pipeline);
         }
         if (nil == pipeline) {
@@ -223,7 +223,7 @@ static const char* gSelectTemplate = R"metal(
 #include <metal_stdlib>
 #include <simd/simd.h>
 using namespace metal;
-kernel void main0(device T* uOutput [[buffer(0)]], const device int* uSelect [[buffer(1)]], const device T* uInput0 [[buffer(2)]], const device T* uInput1 [[buffer(3)]], constant int4& uStride [[buffer(4)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+kernel void select(device T* uOutput [[buffer(0)]], const device int* uSelect [[buffer(1)]], const device T* uInput0 [[buffer(2)]], const device T* uInput1 [[buffer(3)]], constant int4& uStride [[buffer(4)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
 {
     int i = int(gl_GlobalInvocationID.x);
     if (i < uStride.w)
@@ -288,7 +288,7 @@ public:
             compileOptions.preprocessorMacros = @{
                 @"T" : T,
             };
-            pipeline = mtbn->makeComputePipelineWithSourceOption(gSelectTemplate, "main0", compileOptions);
+            pipeline = mtbn->makeComputePipelineWithSourceOption(gSelectTemplate, "select", compileOptions);
             mtbn->runtime()->insertPipeline(keys, pipeline);
         }
         if (nil == pipeline) {
@@ -325,7 +325,7 @@ static const char* gRangeTemplate = R"metal(
 #include <metal_stdlib>
 #include <simd/simd.h>
 using namespace metal;
-kernel void main0(device T* uOutput [[buffer(0)]], const device T* uStart [[buffer(1)]], const device T* uDelta [[buffer(2)]], constant int4& uSize [[buffer(3)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+kernel void range(device T* uOutput [[buffer(0)]], const device T* uStart [[buffer(1)]], const device T* uDelta [[buffer(2)]], constant int4& uSize [[buffer(3)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
 {
     int i = int(gl_GlobalInvocationID.x);
     if(i < uSize.w) {
@@ -348,7 +348,7 @@ public:
             compileOptions.preprocessorMacros = @{
                 @"T" : T,
             };
-            pipeline = mtbn->makeComputePipelineWithSourceOption(gRangeTemplate, "main0", compileOptions);
+            pipeline = mtbn->makeComputePipelineWithSourceOption(gRangeTemplate, "range", compileOptions);
             mtbn->runtime()->insertPipeline(keys, pipeline);
         }
         if (nil == pipeline) {

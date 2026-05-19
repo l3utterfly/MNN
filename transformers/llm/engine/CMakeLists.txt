@@ -1,5 +1,6 @@
 option(BUILD_MLS "Build PC Commandline." OFF)
-option(LLM_USE_MINJA "Use minja to apply template" ON)
+option(MNN_LLM_BUILD_DEMO "Build LLM demo" ON)
+option(LLM_SUPPORT_HTTP_RESOURCE "Support HTTP resource download" ON)
 
 set(LLM_DEPS ${MNN_DEPS})
 if (MNN_BUILD_OPENCV)
@@ -32,6 +33,7 @@ if (MNN_SEP_BUILD)
         # compile dynamic so, support Linux/Mac
         add_library(llm SHARED ${SRCS})
         set_target_properties(llm PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
+        target_compile_options(llm PRIVATE -fvisibility=default)
         target_link_libraries(llm ${LLM_DEPS})
     else()
         add_library(llm STATIC ${SRCS})
@@ -40,17 +42,24 @@ if (MNN_SEP_BUILD)
 else()
     add_library(llm OBJECT ${SRCS})
 endif()
-if (LLM_USE_MINJA)
-    target_compile_options(llm PRIVATE -DLLM_USE_MINJA)
-    add_executable(apply_template ${CMAKE_CURRENT_LIST_DIR}/demo/apply_template.cpp)
-    target_link_libraries(apply_template ${LLM_DEPS})
-endif()
+# jinja.cpp template engine (always enabled, header-only)
+target_compile_definitions(llm PRIVATE LLM_USE_JINJA)
+
+# apply_template demo (uses jinja)
+add_executable(apply_template ${CMAKE_CURRENT_LIST_DIR}/demo/apply_template.cpp)
+target_link_libraries(apply_template ${LLM_DEPS})
 
 if (MNN_BUILD_OPENCV)
     target_compile_definitions(llm PRIVATE LLM_SUPPORT_VISION)
 endif()
 if (MNN_BUILD_AUDIO)
     add_definitions(-DLLM_SUPPORT_AUDIO)
+endif()
+
+if (LLM_SUPPORT_HTTP_RESOURCE)
+    target_compile_definitions(llm PRIVATE LLM_SUPPORT_HTTP_RESOURCE)
+    # Disable exceptions in httplib since MNN is compiled with -fno-exceptions
+    target_compile_definitions(llm PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
 endif()
 
 IF(CMAKE_SYSTEM_NAME MATCHES "^Android" AND NOT MNN_BUILD_FOR_ANDROID_COMMAND)
@@ -68,17 +77,29 @@ INSTALL(DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/include/ DESTINATION include FILES_M
 ENDIF()
 
 
-add_executable(llm_demo ${CMAKE_CURRENT_LIST_DIR}/demo/llm_demo.cpp)
-add_executable(embedding_demo ${CMAKE_CURRENT_LIST_DIR}/demo/embedding_demo.cpp)
-add_executable(reranker_demo ${CMAKE_CURRENT_LIST_DIR}/demo/reranker_demo.cpp)
-add_executable(rollback_demo ${CMAKE_CURRENT_LIST_DIR}/demo/rollback_demo.cpp)
-add_executable(llm_bench ${CMAKE_CURRENT_LIST_DIR}/demo/llm_bench.cpp)
-target_link_libraries(llm_demo ${LLM_DEPS})
-target_link_libraries(embedding_demo ${LLM_DEPS})
-target_link_libraries(reranker_demo ${LLM_DEPS})
-target_link_libraries(rollback_demo ${LLM_DEPS})
-target_link_libraries(llm_bench ${LLM_DEPS})
+if(MNN_LLM_BUILD_DEMO)
+    add_executable(llm_demo ${CMAKE_CURRENT_LIST_DIR}/demo/llm_demo.cpp)
+    add_executable(embedding_demo ${CMAKE_CURRENT_LIST_DIR}/demo/embedding_demo.cpp)
+    add_executable(reranker_demo ${CMAKE_CURRENT_LIST_DIR}/demo/reranker_demo.cpp)
+    add_executable(rollback_demo ${CMAKE_CURRENT_LIST_DIR}/demo/rollback_demo.cpp)
+    FILE(GLOB TOKENIZER_SRCS ${CMAKE_CURRENT_LIST_DIR}/src/tokenizer/*.cpp)
+    add_executable(tokenizer_demo ${CMAKE_CURRENT_LIST_DIR}/demo/tokenizer_demo.cpp ${TOKENIZER_SRCS})
+    target_include_directories(tokenizer_demo PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/tokenizer/ ${CMAKE_CURRENT_LIST_DIR}/src/)
 
+    include(${CMAKE_CURRENT_LIST_DIR}/tools/CMakeLists.txt)
+    target_link_libraries(llm_demo ${LLM_DEPS})
+    target_link_libraries(embedding_demo ${LLM_DEPS})
+    target_link_libraries(reranker_demo ${LLM_DEPS})
+    target_link_libraries(rollback_demo ${LLM_DEPS})
+    target_link_libraries(tokenizer_demo ${LLM_DEPS})
+endif()
+
+option(MNN_LLM_BUILD_TEST "Build LLM unit tests" OFF)
+if(MNN_LLM_BUILD_TEST)
+    add_executable(test_tokenizer ${CMAKE_CURRENT_LIST_DIR}/test/test_tokenizer.cpp)
+    target_include_directories(test_tokenizer PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/)
+    target_link_libraries(test_tokenizer llm ${LLM_DEPS})
+endif()
 
 if (BUILD_MLS)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version" FORCE)
@@ -88,6 +109,7 @@ add_executable(mls
         ${CMAKE_CURRENT_LIST_DIR}/app/remote_model_downloader.cpp
         ${CMAKE_CURRENT_LIST_DIR}/app/file_utils.cpp
         ${CMAKE_CURRENT_LIST_DIR}/app/llm_benchmark.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/app/llm_benchmark_common.cpp
         ${CMAKE_CURRENT_LIST_DIR}/app/hf_api_client.cpp
         ${CMAKE_CURRENT_LIST_DIR}/app/mls_server.cpp
 )

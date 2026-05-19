@@ -13,7 +13,11 @@ import com.alibaba.mls.api.download.DownloadListener
 import com.alibaba.mls.api.download.DownloadState
 import com.alibaba.mls.api.download.ModelDownloadManager
 import com.alibaba.mnnllm.android.model.Modality
-import com.alibaba.mnnllm.android.modelmarket.ModelMarketUtils.writeMarketConfig
+import com.alibaba.mnnllm.android.model.ModelTypeUtils
+import com.alibaba.mnnllm.android.chat.model.ChatDataManager
+import com.alibaba.mnnllm.android.download.DownloadForegroundServiceManager
+import com.alibaba.mnnllm.android.modelmarket.ModelMarketCache
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -23,13 +27,12 @@ class ModelMarketViewModel(application: Application) : AndroidViewModel(applicat
         private const val TAG = "ModelMarketViewModel"
     }
 
-    private val repository = ModelRepository(application)
     private val downloadManager = ModelDownloadManager.getInstance(application)
     private var allModels: List<ModelMarketItemWrapper> = emptyList()
     private var mainHandler: Handler = Handler(application.mainLooper)
     private val lastUpdateTimeMap: MutableMap<String, Long> = HashMap()
     private val lastDownloadProgressStage: MutableMap<String, String> = HashMap()
-    private var modelMarketData: ModelMarketData? = null
+    private var modelMarketConfig: ModelMarketConfig? = null
     private var currentFilterState: FilterState = FilterState()
 
     private val _models = MutableLiveData<List<ModelMarketItemWrapper>>()
@@ -99,19 +102,14 @@ class ModelMarketViewModel(application: Application) : AndroidViewModel(applicat
             }
         }
 
-        if (currentFilterState.downloadState == "true") {
-            Log.d(TAG, "Filtering for completed downloads. Total models before filter: ${filteredList.size}")
-            
-            // Debug: Print download states of all models
-            filteredList.forEach { wrapper ->
-                Log.d(TAG, "Model: ${wrapper.modelMarketItem.modelName}, downloadState: ${wrapper.downloadInfo.downloadState}, COMPLETED: ${DownloadState.COMPLETED}")
-            }
+        if (currentFilterState.downloadState != null) {
+            Log.d(TAG, "Filtering for download state: ${currentFilterState.downloadState}. Total models before filter: ${filteredList.size}")
             
             filteredList = filteredList.filter { wrapper ->
-                wrapper.downloadInfo.downloadState == DownloadState.COMPLETED
+                wrapper.downloadInfo.downloadState == currentFilterState.downloadState
             }
             
-            Log.d(TAG, "Models after completed filter: ${filteredList.size}")
+            Log.d(TAG, "Models after download state filter: ${filteredList.size}")
         }
 
         if (currentFilterState.source != null) {
@@ -142,25 +140,28 @@ class ModelMarketViewModel(application: Application) : AndroidViewModel(applicat
                 _isLoading.postValue(true)
                 _loadError.postValue(null)
                 
-                // Load full data for TagMapper initialization
-                modelMarketData = repository.getModelMarketData()
+                // Get pre-processed config with all models
+                val config = ModelRepository.getModelMarketData()
+                modelMarketConfig = config
                 
-                if (modelMarketData == null) {
+                if (config == null) {
                     // Handle case where data couldn't be loaded
                     _isLoading.postValue(false)
                     _loadError.postValue("Failed to load model data")
                     return@launch
                 }
                 
-                modelMarketData?.let { data ->
-                    // Initialize TagMapper with data from JSON
-                    TagMapper.initializeFromData(data)
-                }
+                // Initialize TagMapper with config
+                TagMapper.initializeFromConfig(config)
                 
-                // Get filtered models with correctly set modelId
-                val marketItems = repository.getModels()
+                // Use pre-processed models directly from config
+                val marketItems = config.llmModels
                 allModels = marketItems.map {
-                    val downloadInfo = downloadManager.getDownloadInfo(it)
+                    val downloadInfo = downloadManager.getDownloadInfo(it.modelId)
+                    // If download hasn't started and we have file size in metadata, use it
+                    if (downloadInfo.totalSize == 0L && it.fileSize > 0) {
+                        downloadInfo.totalSize = it.fileSize
+                    }
                     Log.d(TAG, "Model: ${it.modelName}, modelId: ${it.modelId} initial downloadState: ${downloadInfo.downloadState}")
                     ModelMarketItemWrapper(it, downloadInfo)
                 }
@@ -185,8 +186,12 @@ class ModelMarketViewModel(application: Application) : AndroidViewModel(applicat
         applyCurrentFilters()
     }
 
+    private fun resolveModelName(modelId: String): String? {
+        return allModels.firstOrNull { it.modelMarketItem.modelId == modelId }?.modelMarketItem?.modelName
+    }
+
     fun startDownload(item: ModelMarketItem) {
-        downloadManager.startDownload(item)
+        downloadManager.startDownload(item.modelId)
     }
 
     fun pauseDownload(item: ModelMarketItem) {
@@ -194,22 +199,22 @@ class ModelMarketViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun getDownloadInfo(item: ModelMarketItem): DownloadInfo {
-        return downloadManager.getDownloadInfo(item)
+        return downloadManager.getDownloadInfo(item.modelId)
     }
 
     fun deleteModel(item: ModelMarketItem) {
         viewModelScope.launch {
-            downloadManager.deleteModel(item)
+            downloadManager.deleteModel(item.modelId)
         }
     }
 
     fun updateModel(item: ModelMarketItem) {
-        downloadManager.startDownload(item)
+        downloadManager.startDownload(item.modelId)
     }
 
     fun getAvailableVendors(): List<String> {
         val availableVendors = allModels.map { it.modelMarketItem.vendor }.distinct()
-        val vendorOrder = modelMarketData?.vendorOrder ?: emptyList()
+        val vendorOrder = modelMarketConfig?.vendorOrder ?: emptyList()
         
         // Sort vendors according to the custom order, with unlisted vendors at the end
         return availableVendors.sortedWith { a, b ->
@@ -232,8 +237,8 @@ class ModelMarketViewModel(application: Application) : AndroidViewModel(applicat
     }
     
     fun getQuickFilterTags(): List<Tag> {
-        return modelMarketData?.let { data ->
-            TagMapper.getQuickFilterTags(data.quickFilterTags)
+        return modelMarketConfig?.let { config ->
+            TagMapper.getQuickFilterTags(config.quickFilterTags)
         } ?: emptyList()
     }
 
@@ -258,7 +263,7 @@ class ModelMarketViewModel(application: Application) : AndroidViewModel(applicat
     // DownloadListener implementation - reusing logic from ModelListPresenter
     override fun onDownloadTotalSize(modelId: String, totalSize: Long) {
         mainHandler.post {
-            allModels.find { it.modelMarketItem.modelId == modelId }?.let { updateDownloadInfo(modelId, downloadManager.getDownloadInfo(it.modelMarketItem)) }
+            allModels.find { it.modelMarketItem.modelId == modelId }?.let { updateDownloadInfo(modelId, downloadManager.getDownloadInfo(it.modelMarketItem.modelId)) }
             _itemUpdate.value = modelId
         }
     }
@@ -274,8 +279,13 @@ class ModelMarketViewModel(application: Application) : AndroidViewModel(applicat
         lastDownloadProgressStage.remove(modelId)
         lastUpdateTimeMap.remove(modelId)
         mainHandler.post {
-            allModels.find { it.modelMarketItem.modelId == modelId }?.let { updateDownloadInfo(modelId, downloadManager.getDownloadInfo(it.modelMarketItem)) }
+            allModels.find { it.modelMarketItem.modelId == modelId }?.let { updateDownloadInfo(modelId, downloadManager.getDownloadInfo(it.modelMarketItem.modelId)) }
             _itemUpdate.value = modelId
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = true
+            )
         }
     }
 
@@ -285,12 +295,17 @@ class ModelMarketViewModel(application: Application) : AndroidViewModel(applicat
             val wrapper = allModels.find { it.modelMarketItem.modelId == modelId }
             if (wrapper != null) {
                 Log.d(TAG, "[onDownloadFailed] Found wrapper for $modelId. Updating info.")
-                updateDownloadInfo(modelId, downloadManager.getDownloadInfo(wrapper.modelMarketItem))
+                updateDownloadInfo(modelId, downloadManager.getDownloadInfo(wrapper.modelMarketItem.modelId))
                 _itemUpdate.value = modelId
                 Log.d(TAG, "[onDownloadFailed] Fired _itemUpdate for $modelId.")
             } else {
                 Log.e(TAG, "[onDownloadFailed] Could not find wrapper for modelId: $modelId")
             }
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = false
+            )
         }
     }
 
@@ -321,31 +336,79 @@ class ModelMarketViewModel(application: Application) : AndroidViewModel(applicat
                 // Just update progress without full refresh
                 _progressUpdate.value = Pair(modelId, downloadInfo)
             }
+            
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = downloadInfo.downloadState == DownloadState.DOWNLOADING
+            )
         }
     }
 
     override fun onDownloadFinished(modelId: String, path: String) {
+        recordDiffusionModelTypeIfNeeded(modelId, path)
         mainHandler.post {
             allModels.find { it.modelMarketItem.modelId == modelId }?.let {
-                updateDownloadInfo(modelId, downloadManager.getDownloadInfo(it.modelMarketItem))
-                // Write market config after download
-                writeMarketConfig(it.modelMarketItem)
+                updateDownloadInfo(modelId, downloadManager.getDownloadInfo(it.modelMarketItem.modelId))
+                // Note: Market config write is now handled automatically by ModelMarketCache
+                // which subscribes to ModelRepository changes
             }
             _itemUpdate.value = modelId
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = false
+            )
+        }
+    }
+
+    private fun recordDiffusionModelTypeIfNeeded(modelId: String, path: String) {
+        if (!ModelTypeUtils.isDiffusionModel(modelId)) {
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val resolvedPath = if (path.isNotBlank()) {
+                    path
+                } else {
+                    downloadManager.getDownloadedFile(modelId)?.absolutePath.orEmpty()
+                }
+                if (resolvedPath.isBlank()) {
+                    Log.w(TAG, "Skip recording diffusion type for $modelId: empty model path")
+                    return@launch
+                }
+                ChatDataManager.getInstance(getApplication()).recordDownloadHistory(
+                    modelId,
+                    resolvedPath,
+                    "DIFFUSION"
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to record diffusion type for $modelId", e)
+            }
         }
     }
 
     override fun onDownloadPaused(modelId: String) {
         mainHandler.post {
-            allModels.find { it.modelMarketItem.modelId == modelId }?.let { updateDownloadInfo(modelId, downloadManager.getDownloadInfo(it.modelMarketItem)) }
+            allModels.find { it.modelMarketItem.modelId == modelId }?.let { updateDownloadInfo(modelId, downloadManager.getDownloadInfo(it.modelMarketItem.modelId)) }
             _itemUpdate.value = modelId
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = false
+            )
         }
     }
 
     override fun onDownloadFileRemoved(modelId: String) {
         mainHandler.post {
-            allModels.find { it.modelMarketItem.modelId == modelId }?.let { updateDownloadInfo(modelId, downloadManager.getDownloadInfo(it.modelMarketItem)) }
+            allModels.find { it.modelMarketItem.modelId == modelId }?.let { updateDownloadInfo(modelId, downloadManager.getDownloadInfo(it.modelMarketItem.modelId)) }
             _itemUpdate.value = modelId
+            DownloadForegroundServiceManager.onDownloadStateChanged(
+                modelId = modelId,
+                modelName = resolveModelName(modelId),
+                isDownloading = false
+            )
         }
     }
 

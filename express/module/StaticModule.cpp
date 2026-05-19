@@ -13,9 +13,9 @@
 #include "Utils.hpp"
 #include "core/WrapExecution.hpp"
 #include "core/MNNMemoryUtils.h"
-#include "ModuleInside.hpp"
 #include "RuntimeAttr.hpp"
 #include "core/TensorUtils.hpp"
+#include "MNN_generated.h"
 #include "core/FileLoader.hpp"
 #include "core/OpCommonUtils.hpp"
 
@@ -54,6 +54,8 @@ static std::vector<std::shared_ptr<BufferStorage>> preRearrangeWeights( // NOLIN
     FileLoader loader(scheduleInfo.externalWeightPath.c_str());
     auto&& pipelineInfo = scheduleInfo.pipelineInfo[0].second;
     std::vector<std::shared_ptr<BufferStorage>> splitOps(pipelineInfo.size());
+    // KV Cache sharing: registry of Attention executions by layer_index for clone-based reuse
+    std::map<int, std::shared_ptr<Execution>> kvAttentionRegistry;
     for (int i = 0; i < pipelineInfo.size(); ++i) {
         auto& info = pipelineInfo[i];
         auto op    = pipelineInfo[i].op;
@@ -133,10 +135,28 @@ static std::vector<std::shared_ptr<BufferStorage>> preRearrangeWeights( // NOLIN
                 }
                 break;
             }
-            case MNN::OpType_Attention: {
-                exe.reset(backend->onCreate({}, {}, op));
-                if (exe.get() == nullptr) {
-                    exe.reset(backupBackend->onCreate({}, {}, op));
+            case MNN::OpType_Attention:
+            case MNN::OpType_LinearAttention:
+            {
+                // KV Cache sharing: clone from source Attention's execution instead of creating new
+                if (op->type() == OpType_Attention && op->main_type() == OpParameter_AttentionParam) {
+                    auto param = op->main_as_AttentionParam();
+                    int kvSharedIdx = param ? param->kv_shared_layer_index() : -1;
+                    if (kvSharedIdx >= 0) {
+                        auto srcIt = kvAttentionRegistry.find(kvSharedIdx);
+                        if (srcIt != kvAttentionRegistry.end()) {
+                            Execution* cloned = nullptr;
+                            if (srcIt->second->onClone(srcIt->second->backend(), op, &cloned) && cloned) {
+                                exe.reset(cloned);
+                            }
+                        }
+                    }
+                }
+                if (exe == nullptr) {
+                    exe.reset(backend->onCreate({}, {}, op));
+                    if (exe.get() == nullptr) {
+                        exe.reset(backupBackend->onCreate({}, {}, op));
+                    }
                 }
                 if (nullptr == exe) {
                     break;
@@ -146,16 +166,40 @@ static std::vector<std::shared_ptr<BufferStorage>> preRearrangeWeights( // NOLIN
                     exe = nullptr;
                     break;
                 }
+                // Register Attention execution for KV Cache sharing
+                if (op->type() == OpType_Attention && op->main_type() == OpParameter_AttentionParam) {
+                    auto param = op->main_as_AttentionParam();
+                    int layerIndex = param ? param->layer_index() : -1;
+                    if (layerIndex >= 0) {
+                        kvAttentionRegistry[layerIndex] = exe;
+                    }
+                }
                 break;
             }
             case MNN::OpType_LayerNorm: {
-                std::shared_ptr<BufferStorage> tmpstorage;
-                exe.reset(OpCommonUtils::createExecutionWithExternal(backend, info.inputs, info.outputs, op, &loader, tmpstorage));
-                if (exe.get() == nullptr) {
-                    exe.reset(OpCommonUtils::createExecutionWithExternal(backupBackend, info.inputs, info.outputs, op, &loader, tmpstorage));
+                if (!base_executions.empty() && op->name()) {
+                    auto iter = base_executions.find(op->name()->str());
+                    if (iter != base_executions.end()) {
+                        auto base_exe = iter->second.get();
+                        Execution* copyExecution = nullptr;
+                        base_exe->onClone(backend, op, &copyExecution);
+                        if (copyExecution == nullptr) {
+                            base_exe->onClone(backupBackend, op, &copyExecution);
+                        }
+                        if (copyExecution != nullptr && copyExecution->onClone(nullptr, op, nullptr)) {
+                            exe.reset(copyExecution);
+                        }
+                    }
                 }
-                if (nullptr == exe) {
-                    break;
+                if (exe == nullptr) {
+                    std::shared_ptr<BufferStorage> tmpstorage;
+                    exe.reset(OpCommonUtils::createExecutionWithExternal(backend, info.inputs, info.outputs, op, &loader, tmpstorage));
+                    if (exe.get() == nullptr) {
+                        exe.reset(OpCommonUtils::createExecutionWithExternal(backupBackend, info.inputs, info.outputs, op, &loader, tmpstorage));
+                    }
+                    if (nullptr == exe) {
+                        break;
+                    }
                 }
                 // The exe can't clone
                 if (!exe->onClone(nullptr, op, nullptr)) {
@@ -317,6 +361,12 @@ StaticModule::StaticModule(std::vector<int> inputs,
     auto& bnCache = scheduleInfo.pipelineInfo[0].first;
     // Create Backend for prearrange
     Session::createPipelineBackend(scheduleInfo.pipelineInfo[0], rt);
+    if (nullptr == bnCache.cache.first || nullptr == bnCache.cache.second) {
+        MNN_ERROR("[MNN:Express] Create Backend Error\n");
+        return;
+    }
+    bnCache.cache.first->pNPUModelDirPath = rtm->getInside()->mContent->mNpuDir;
+    bnCache.cache.second->pNPUModelDirPath = rtm->getInside()->mContent->mNpuDir;
     if (config.rearrange) {
         mResource->mBuffer = preRearrangeWeights(scheduleInfo, bnCache.cache.first.get(), bnCache.cache.second.get(), config.base);
     } else {

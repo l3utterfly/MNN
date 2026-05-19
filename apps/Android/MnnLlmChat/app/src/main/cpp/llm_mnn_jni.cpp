@@ -20,14 +20,71 @@
 using MNN::Transformer::Llm;
 using json = nlohmann::json;
 
+namespace {
+JavaVM* g_jvm = nullptr;
+constexpr const char* kCrashReportContextClass = "com/alibaba/mnnllm/android/utils/CrashReportContext";
+constexpr const char* kReportMethodName = "reportLlmSetConfig";
+constexpr const char* kReportMethodSignature = "(Ljava/lang/String;Ljava/lang/String;)V";
+}
+
+void ReportLlmSetConfigToFirebase(const std::string& stage, const std::string& config_json) {
+    if (g_jvm == nullptr) {
+        return;
+    }
+    JNIEnv* env = nullptr;
+    bool need_detach = false;
+    if (g_jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_4) != JNI_OK) {
+        if (g_jvm->AttachCurrentThread(&env, nullptr) != JNI_OK || env == nullptr) {
+            return;
+        }
+        need_detach = true;
+    }
+    jclass crash_class = env->FindClass(kCrashReportContextClass);
+    if (crash_class == nullptr) {
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+        if (need_detach) {
+            g_jvm->DetachCurrentThread();
+        }
+        return;
+    }
+    jmethodID report_method = env->GetStaticMethodID(
+            crash_class, kReportMethodName, kReportMethodSignature);
+    if (report_method == nullptr) {
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+        env->DeleteLocalRef(crash_class);
+        if (need_detach) {
+            g_jvm->DetachCurrentThread();
+        }
+        return;
+    }
+    jstring stage_j = env->NewStringUTF(stage.c_str());
+    jstring config_j = env->NewStringUTF(config_json.c_str());
+    env->CallStaticVoidMethod(crash_class, report_method, stage_j, config_j);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+    env->DeleteLocalRef(stage_j);
+    env->DeleteLocalRef(config_j);
+    env->DeleteLocalRef(crash_class);
+    if (need_detach) {
+        g_jvm->DetachCurrentThread();
+    }
+}
+
 extern "C" {
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
+    g_jvm = vm;
     __android_log_print(ANDROID_LOG_DEBUG, "MNN_DEBUG", "JNI_OnLoad");
     return JNI_VERSION_1_4;
 }
 
 JNIEXPORT void JNI_OnUnload(JavaVM *vm, void *reserved) {
+    g_jvm = nullptr;
     __android_log_print(ANDROID_LOG_DEBUG, "MNN_DEBUG", "JNI_OnUnload");
 }
 
@@ -64,8 +121,21 @@ JNIEXPORT jlong JNICALL Java_com_alibaba_mnnllm_android_llm_LlmSession_initNativ
     }
     auto llm_session = new mls::LlmSession(model_dir_str, merged_config, extra_json_config,
                                            history);
-    llm_session->Load();
-    MNN_DEBUG("LIFECYCLE: LlmSession CREATED at %p", llm_session);
+    bool load_success = llm_session->Load();
+    MNN_DEBUG("LIFECYCLE: LlmSession CREATED at %p, load_success=%d", llm_session, load_success);
+    if (!load_success || !llm_session->isModelReady()) {
+        std::string err_msg = llm_session->getLastLoadError();
+        if (err_msg.empty()) {
+            err_msg = "Model load failed for config: " + model_dir_str;
+        }
+        MNN_DEBUG("Model load failed, cleaning up LlmSession: %s", err_msg.c_str());
+        delete llm_session;
+        jclass exClass = env->FindClass("java/lang/IllegalStateException");
+        if (exClass) {
+            env->ThrowNew(exClass, err_msg.c_str());
+        }
+        return 0;
+    }
     MNN_DEBUG("createLLM EndLoad %ld ", reinterpret_cast<jlong>(llm_session));
     return reinterpret_cast<jlong>(llm_session);
 }
@@ -80,7 +150,15 @@ JNIEXPORT jobject JNICALL Java_com_alibaba_mnnllm_android_llm_LlmSession_submitN
                                                                                       progressListener) {
     auto *llm = reinterpret_cast<mls::LlmSession *>(llmPtr);
     if (!llm) {
-        return env->NewStringUTF("Failed, Chat is not ready!");
+        // Return a HashMap with error info to match the Java signature
+        jclass hashMapClass = env->FindClass("java/util/HashMap");
+        jmethodID hashMapInit = env->GetMethodID(hashMapClass, "<init>", "()V");
+        jmethodID putMethod = env->GetMethodID(hashMapClass, "put",
+                                               "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+        jobject hashMap = env->NewObject(hashMapClass, hashMapInit);
+        env->CallObjectMethod(hashMap, putMethod, env->NewStringUTF("error"),
+                              env->NewStringUTF("Failed, Chat is not ready!"));
+        return hashMap;
     }
     const char *input_str = env->GetStringUTFChars(inputStr, nullptr);
     jclass progressListenerClass = env->GetObjectClass(progressListener);
@@ -159,7 +237,15 @@ JNIEXPORT jobject JNICALL Java_com_alibaba_mnnllm_android_llm_LlmSession_submitF
 ) {
     auto *llm = reinterpret_cast<mls::LlmSession *>(llmPtr);
     if (!llm) {
-        return env->NewStringUTF("Failed, Chat is not ready!");
+        // Return a HashMap with error info to match the Java signature
+        jclass hashMapClass = env->FindClass("java/util/HashMap");
+        jmethodID hashMapInit = env->GetMethodID(hashMapClass, "<init>", "()V");
+        jmethodID putMethod = env->GetMethodID(hashMapClass, "put",
+                                               "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+        jobject hashMap = env->NewObject(hashMapClass, hashMapInit);
+        env->CallObjectMethod(hashMap, putMethod, env->NewStringUTF("error"),
+                              env->NewStringUTF("Failed, Chat is not ready!"));
+        return hashMap;
     }
 
     // 解析 Java List<Pair<String, String>> 到 C++ vector
@@ -176,7 +262,15 @@ JNIEXPORT jobject JNICALL Java_com_alibaba_mnnllm_android_llm_LlmSession_submitF
     jclass pairClass = env->FindClass("android/util/Pair");
     if (pairClass == nullptr) {
         MNN_DEBUG("Failed to find android.util.Pair class");
-        return env->NewStringUTF("Failed to find android.util.Pair class");
+        // Return a HashMap with error info to match the Java signature
+        jclass hashMapClass = env->FindClass("java/util/HashMap");
+        jmethodID hashMapInit = env->GetMethodID(hashMapClass, "<init>", "()V");
+        jmethodID putMethod = env->GetMethodID(hashMapClass, "put",
+                                               "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+        jobject hashMap = env->NewObject(hashMapClass, hashMapInit);
+        env->CallObjectMethod(hashMap, putMethod, env->NewStringUTF("error"),
+                              env->NewStringUTF("Failed to find android.util.Pair class"));
+        return hashMap;
     }
     // 使用 GetFieldID 访问 first 字段
     jfieldID firstField = env->GetFieldID(pairClass, "first", "Ljava/lang/Object;");
@@ -350,6 +444,17 @@ Java_com_alibaba_mnnllm_android_llm_LlmSession_getDebugInfoNative(JNIEnv *env, j
         return env->NewStringUTF("");
     }
     return env->NewStringUTF(llm->getDebugInfo().c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_alibaba_mnnllm_android_llm_LlmSession_dumpConfigNative(JNIEnv *env, jobject thiz,
+                                                                jlong objecPtr) {
+    auto *llm = reinterpret_cast<mls::LlmSession *>(objecPtr);
+    if (llm == nullptr) {
+        return env->NewStringUTF("{}");
+    }
+    return env->NewStringUTF(llm->dumpConfig().c_str());
 }
 
 JNIEXPORT void JNICALL Java_com_alibaba_mnnllm_android_llm_LlmSession_releaseNative(JNIEnv *env,

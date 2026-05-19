@@ -2,31 +2,44 @@
 ---
 [![License](https://img.shields.io/github/license/alibaba/MNN)](LICENSE.txt)
 [![Documentation](https://img.shields.io/badge/Documentation-Read-green)](https://mnn-docs.readthedocs.io/en/latest/)
-[![中文版本](https://img.shields.io/badge/Language-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-green)](README_CN.md)
+[![簡體中文版本](https://img.shields.io/badge/Language-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-green)](README_CN.md)
+[![繁體中文版本](https://img.shields.io/badge/Language-%E7%B9%81%E9%AB%94%E4%B8%AD%E6%96%87-green)](README_TW.md)
 [![日本語バージョン](https://img.shields.io/badge/Language-%E6%97%A5%E6%9C%AC%E8%AA%9E-green)](README_JP.md)
 [![MNN Homepage](https://img.shields.io/badge/Homepage-Visit-green)](http://www.mnn.zone)
+[![zread](https://img.shields.io/badge/Zread-ask-green)](https://zread.ai/alibaba/MNN)
 
-[![MNN Chat App](https://img.shields.io/badge/Apps-MNN_Chat-blue)](./apps/Android/MnnLlmChat/README.md) 
-[![TaoAvatar](https://img.shields.io/badge/Apps-MNN_TaoAvatar-blue)](./apps/Android/Mnn3dAvatar/README.md) 
-
+[![MNN Chat App](https://img.shields.io/badge/Apps-MNN_Chat-blue)](./apps/Android/MnnLlmChat/README.md)
+[![TaoAvatar](https://img.shields.io/badge/Apps-MNN_TaoAvatar-blue)](./apps/Android/Mnn3dAvatar/README.md)
+[![Sana](https://img.shields.io/badge/Apps-Sana_Image_Edit-blue)](./apps/sana/README.md)
 
 ## News 🔥
-- [2025/06/11] New App MNN TaoAvatar released, you can talk with 3DAvatar offline with LLM, ASR, TTS, A2BS and NNR models all run local on your device!! [MNN TaoAvatar](./apps/Android/Mnn3dAvatar/README.md) 
+- [2026/03/05] Support Qwen3.5 Series.
+<p align="center">
+  <img width="15%" alt="Icon"  src="https://meta.alicdn.com/data/mnn/assets/qwen35_1.jpg" style="margin: 0 10px;">
+  <img width="15%" alt="Icon" src="https://meta.alicdn.com/data/mnn/assets/qwen35_2.jpg" style="margin: 0 10px;">
+  <img width="15%" alt="Icon" src="https://meta.alicdn.com/data/mnn/assets/qwen35_3.jpg" style="margin: 0 10px;">
+</p>
+
+- [2026/02/13] MNN-Sana-Edit-V2 is now available at [apps](./apps/sana/README.md), offering cartoon-style photo editing based on Sana.
+<p align="center">
+  <img width="80%" alt="Icon"  src="https://meta.alicdn.com/data/mnn/assets/sana_show_case.jpg" style="margin: 0 10px;">
+</p>
+
+<details>
+<summary> History News </summary>
+
+- [2025/10/16] Support Qwen3-VL Series.
+- [2025/06/11] New App MNN TaoAvatar released, you can talk with 3DAvatar offline with LLM, ASR, TTS, A2BS and NNR models all run local on your device!! [MNN TaoAvatar](./apps/Android/Mnn3dAvatar/README.md)
 <p align="center">
   <img width="20%" alt="Icon"  src="https://meta.alicdn.com/data/mnn/avatar/avatar_demo.gif" style="margin: 0 10px;">
 </p>
 
-- [2025/05/30] MNN Chat app support DeepSeek-R1-0528-Qwen3,Qwen3-30B-A3B, SmoVLM and FastVLM [MNN Chat App](./apps/Android/MnnLlmChat/README.md#releases).
 - [2025/05/12] android app support qwen2.5 omni 3b and 7b [MNN Chat App](./apps/Android/MnnLlmChat/README.md#releases).
 <p align="center">
   <img width="20%" alt="Icon"  src="./apps/Android/MnnLlmChat/assets/image_home_new.jpg" style="margin: 0 10px;">
   <img width="20%" alt="Icon" src="./apps/Android/MnnLlmChat/assets/image_sound_new.jpg" style="margin: 0 10px;">
   <img width="20%" alt="Icon" src="./apps/Android/MnnLlmChat/assets/image_image_new.jpg" style="margin: 0 10px;">
 </p>
-
-
-<details>
-<summary> History News </summary>
 
 - [2025/04/30] android app support qwen3 and dark mode [MNN Chat App](./apps/Android/MnnLlmChat/README.md#releases).
 <p align="center">
@@ -154,13 +167,13 @@ The group discussions are predominantly Chinese. But we welcome and will help En
 
 Dingtalk discussion groups:
 
-Group #1 (Full): 23329087
+Group #4 (Available): 160170007549
+
+Group #3 (Full)
 
 Group #2 (Full): 23350225
 
-Group #3: QR code:
-
-![MNN-3](doc/dingdingmnn3.png)
+Group #1 (Full): 23329087
 
 ## Historical Paper
 

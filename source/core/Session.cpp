@@ -91,8 +91,8 @@ void Session::ModeGroup::setHint(Interpreter::HintMode hint, int value) {
         case Interpreter::HintMode::DYNAMIC_QUANT_OPTIONS:
             runtimeHint.dynamicQuantOption = value;
             break;
-        case Interpreter::HintMode::QKV_QUANT_OPTIONS:
-            runtimeHint.qkvQuantOption = value;
+        case Interpreter::HintMode::ATTENTION_OPTION:
+            runtimeHint.attentionOption = value;
             break;
         case Interpreter::HintMode::KVCACHE_SIZE_LIMIT:
             runtimeHint.kvcacheSizeLimit = value;
@@ -110,10 +110,16 @@ void Session::ModeGroup::setHint(Interpreter::HintMode hint, int value) {
             runtimeHint.initThreadNumber = value;
             break;
         case Interpreter::CPU_SME2_INSTRUCTIONS:
-            runtimeHint.useArmSme2Cores = value;
+            runtimeHint.useArmSme2Cores = value > 0 ? true : false;
             break;
         case Interpreter::HintMode::CPU_ENABLE_KLEIDIAI:
             runtimeHint.enableKleidiAI = value > 0 ? true : false;
+            break;
+        case Interpreter::CPU_SME2_NEON_DIVISION_RATIO:
+            runtimeHint.divisionRatio = value;
+            break;
+        case Interpreter::CPU_SME_CORES:
+            runtimeHint.smeCores = value;
             break;
         default:
             break;
@@ -134,14 +140,14 @@ void Session::ModeGroup::setExternalPath(std::string path, int type) {
         case MNN::Interpreter::EXTERNAL_PATH_KVCACHE_DIR:
             runtimeHint.kvcacheDirPath = path;
             break;
+        case MNN::Interpreter::EXTERNAL_PATH_PREFIXCACHE_DIR:
+            runtimeHint.prefixcacheDirPath = path;
+            break;
         case MNN::Interpreter::EXTERNAL_FEATUREMAP_DIR:
             runtimeHint.midMemoryPath = path;
             break;
         case MNN::Interpreter::EXTERNAL_WEIGHT_DIR:
             runtimeHint.weightMemoryPath = path;
-            break;
-        case MNN::Interpreter::EXTERNAL_NPU_FILE_DIR:
-            runtimeHint.npuModelDirPath = path;
             break;
         default:
             break;
@@ -557,6 +563,43 @@ Session* Session::clone(RuntimeInfo&& runtime, std::shared_ptr<Schedule::Schedul
             if (valid) {
                 std::shared_ptr<Execution> copyExeWrap(copyExecution);
                 opInfo.executionCache.insert(std::make_pair(iter.first, copyExeWrap));
+            }
+        }
+    }
+    // KV Cache sharing: fix up shared Attention layers to clone from the new session's source
+    {
+        std::map<int, std::shared_ptr<Execution>> kvAttentionRegistry;
+        // First pass: collect source Attention executions by layer_index
+        for (int i = 0; i < oplists.size(); ++i) {
+            for (auto& iter : oplists[i].executionCache) {
+                if (iter.first->type() == OpType_Attention && iter.first->main_type() == OpParameter_AttentionParam) {
+                    auto param = iter.first->main_as_AttentionParam();
+                    int layerIndex = param ? param->layer_index() : -1;
+                    if (layerIndex >= 0 && param->kv_shared_layer_index() < 0) {
+                        kvAttentionRegistry[layerIndex] = iter.second;
+                    }
+                }
+            }
+        }
+        // Second pass: re-clone shared layers from the new session's source
+        if (!kvAttentionRegistry.empty()) {
+            for (int i = 0; i < oplists.size(); ++i) {
+                for (auto& iter : oplists[i].executionCache) {
+                    if (iter.first->type() == OpType_Attention &&
+                        iter.first->main_type() == OpParameter_AttentionParam) {
+                        auto param = iter.first->main_as_AttentionParam();
+                        int kvSharedIdx = param ? param->kv_shared_layer_index() : -1;
+                        if (kvSharedIdx >= 0) {
+                            auto srcIt = kvAttentionRegistry.find(kvSharedIdx);
+                            if (srcIt != kvAttentionRegistry.end()) {
+                                Execution* cloned = nullptr;
+                                if (srcIt->second->onClone(srcIt->second->backend(), iter.first, &cloned) && cloned) {
+                                    iter.second.reset(cloned);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

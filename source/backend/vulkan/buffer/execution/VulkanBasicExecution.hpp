@@ -13,6 +13,10 @@
 #include "VulkanBackend.hpp"
 
 namespace MNN {
+#ifdef ENABLE_VULKAN_TIME_PROFILE
+static constexpr const char* kVulkanTimeProfileDefaultExecutionName = "General_Execution";
+#endif
+
 class VulkanBasicExecution {
 public:
     VulkanBasicExecution(Backend *bn) : mBackend(bn) {
@@ -22,6 +26,10 @@ public:
 
     virtual ErrorCode onEncode(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs,
                                const VulkanCommandPool::Buffer *cmdBuffer) = 0;
+
+    virtual ErrorCode onBeforeExecute(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
+        return NO_ERROR;
+    }
 
     Backend* backend() {
         return mBackend;
@@ -37,7 +45,7 @@ public:
         return mName;
     }
 protected:
-    std::string mName = "General_Execution";
+    std::string mName = kVulkanTimeProfileDefaultExecutionName;
 #endif
 private:
     Backend* mBackend;
@@ -58,6 +66,11 @@ public:
         if (nullptr == dstExe) {
             return false;
         }
+#ifdef ENABLE_VULKAN_TIME_PROFILE
+        if (dstExe->getName() == kVulkanTimeProfileDefaultExecutionName && nullptr != op) {
+            dstExe->setName(EnumNameOpType(op->type()));
+        }
+#endif
         std::shared_ptr<VulkanBasicExecution> dstExePtr(dstExe);
         *dst = new VulkanBasicExecutionDirect(dstExePtr);
         return true;
@@ -66,17 +79,12 @@ public:
 private:
     std::shared_ptr<VulkanBasicExecution> mEncoder;
     std::shared_ptr<VulkanCommandPool::Buffer> mCmdBuffer;
-#ifdef ENABLE_VULKAN_TIME_PROFILE
-    std::shared_ptr<VulkanQueryPool> mQueryPool;
-#endif
 };
 class VulkanBasicExecutionInDirect : public Execution {
 public:
     VulkanBasicExecutionInDirect(std::shared_ptr<VulkanBasicExecution> encoder);
     virtual ~ VulkanBasicExecutionInDirect() = default;
-    virtual ErrorCode onExecute(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override {
-        return NO_ERROR;
-    }
+    virtual ErrorCode onExecute(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
     virtual ErrorCode onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
     virtual bool onClone(Backend* bn, const Op* op, Execution** dst) override {
         if (nullptr == dst) {
@@ -87,6 +95,11 @@ public:
         if (nullptr == dstExe) {
             return false;
         }
+#ifdef ENABLE_VULKAN_TIME_PROFILE
+        if (dstExe->getName() == kVulkanTimeProfileDefaultExecutionName && nullptr != op) {
+            dstExe->setName(EnumNameOpType(op->type()));
+        }
+#endif
         std::shared_ptr<VulkanBasicExecution> dstExePtr(dstExe);
         *dst = new VulkanBasicExecutionInDirect(dstExePtr);
         return true;
@@ -101,6 +114,10 @@ typedef int ivec4[4];
 typedef float vec2[2];
 typedef float vec3[3];
 typedef float vec4[4];
+
+typedef int16_t f16vec2[2];
+typedef int16_t f16vec3[3];
+typedef int16_t f16vec4[4];
 
 } // namespace MNN
 #endif /* VulkanBasicExecution_hpp */

@@ -9,6 +9,7 @@ TTSService::~TTSService() {
 }
 
 bool TTSService::LoadTtsResources(const char *resPath, const char* modelName, const char* cacheDir) {
+    MNNITTSLogger::GetInstance().SetLogLevel(PDEBUG);
     MH_DEBUG("TTSService::LoadTtsResources resPath: %s", resPath);
     if (!tts_) {
         tts_ = std::make_shared<MNNTTSSDK>(
@@ -37,6 +38,12 @@ void WriteToFileForDebug(const std::vector<int16_t> &audio, const std::string &f
 
 void TTSService::SetIndex(int index) {
     current_index_ = index;
+}
+
+void TTSService::SetSpeakerId(const std::string &speaker_id) {
+    if (tts_) {
+        tts_->SetSpeakerId(speaker_id);
+    }
 }
 
 std::vector<int16_t> TTSService::Process(const std::string &text, int id) {

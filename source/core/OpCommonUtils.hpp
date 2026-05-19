@@ -9,34 +9,15 @@
 #ifndef OpCommonUtils_hpp
 #define OpCommonUtils_hpp
 #include <MNN/Tensor.hpp>
+#include <vector>
+#include <unordered_map>
 #include "TensorUtils.hpp"
 #include "FileLoader.hpp"
+#include "KVMeta.hpp"
 
 namespace MNN {
 struct Op;
 struct CoreFunctions;
-#ifdef MNN_SUPPORT_TRANSFORMER_FUSE
-struct KVMeta {
-    size_t block = 4096;
-    size_t previous = 0;
-    size_t remove = 0;
-    int* reserve = nullptr;
-    int n_reserve = 0;
-    size_t add = 0;
-    int computeReverseSize() const {
-        int sum = 0;
-        for (int i=0; i<n_reserve; ++i) {
-            int reserveUnit = reserve[2*i+1];
-            if (reserveUnit <= 0) {
-                // Invalid
-                return -1;
-            }
-            sum += reserveUnit;
-        }
-        return sum;
-    }
-};
-#endif
 
 class MNN_PUBLIC OpCommonUtils {
 #define USE_EXTERNAL_DATA(param) (param->external() && param->external()->size() > 1)
@@ -46,7 +27,6 @@ public:
     static bool supportDynamicInputMemory(MNNForwardType type);
     static void broastCastComputeDim(int* dims, int* stride, int* iStride0, int* iStride1, const Tensor* input0,
                                      const Tensor* input1, const Tensor* output);
-    static std::vector<std::tuple<int, int, int>> computeReduceDims(const std::vector<Tensor*>& inputs, const Op* op);
     static void unravelIndexHelper(int32_t* coordinate, const int32_t* mod, int size,
                                    int indice);
     static int computeStride(int32_t* strides, const int* shape, int length);

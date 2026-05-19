@@ -1,7 +1,7 @@
 # 示例工程
 
 ## C++ Demo
-[从源码编译](../compile/tools.html#id7)
+[从源码编译](../compile/other.md)
 ### 姿态检测
 代码位置：`demo/exec/multiPose.cpp`
 
@@ -227,3 +227,4 @@ sh ../tools/script/get_model.sh
 - [视频抠图](https://github.com/DefTruth/RobustVideoMatting.lite.ai.toolkit)
 - [SuperGlue关键点匹配](https://github.com/Hanson0910/MNNSuperGlue)
 - [OCR](https://github.com/DayBreak-u/chineseocr_lite/tree/onnx/android_projects/OcrLiteAndroidMNN)
+- [Bert-VITS2-MNN](https://github.com/Voine/Bert-VITS2-MNN)

@@ -15,6 +15,7 @@
 #include "geometry/GeometryComputerUtils.hpp"
 #include "shape/SizeComputer.hpp"
 #include "core/OpCommonUtils.hpp"
+#include "MNN_generated.h"
 
 // TODO: Find better way for debug
 //#define MNN_OP_SEPERATE
@@ -37,6 +38,7 @@ static std::set<OpType> _getQuantPropagateOp(Runtime::CompilerType type) {
         propagateOpTypes.insert(OpType_Squeeze);
         propagateOpTypes.insert(OpType_Unpack);
         propagateOpTypes.insert(OpType_Unsqueeze);
+        propagateOpTypes.insert(OpType_GatherV2);
     }
     return propagateOpTypes;
 }
@@ -237,14 +239,14 @@ ErrorCode Pipeline::encode(bool supportDebug, bool permitCodegen) {
     }
     // Propagate Scale and insert new command
     const RuntimeCreator* creator = nullptr;
-    {
+    if (mIsQuantModel) {
         auto type = mBackend->type();
         if (MNN_FORWARD_CPU_EXTENSION == type) {
             type = MNN_FORWARD_CPU;
         }
         creator = MNNGetExtraRuntimeCreator(type);
     }
-    if (mIsQuantModel && creator->onSetQuantInfo(nullptr, {}, {})) {
+    if (mIsQuantModel && creator && creator->onSetQuantInfo(nullptr, {}, {})) {
         // get propagate map
         using PropagateMap = std::map<const MNN::Tensor*, std::set<const MNN::Tensor*>>;
         PropagateMap forwardMap, backwardMap;
@@ -261,12 +263,32 @@ ErrorCode Pipeline::encode(bool supportDebug, bool permitCodegen) {
             for (const auto& cmdP : buffer.command) {
                 auto& cmd = *cmdP;
                 const auto type = cmd.op->type();
-                const auto output = cmd.outputs[0];
-                if (propagateOpTypes.find(type) != propagateOpTypes.end() && output->getType().code == halide_type_float) {
-                    for (auto t : cmd.inputs) {
-                        if (t->getType().code == halide_type_float) {
-                            insertPropagateMap(forwardMap, t, output);
-                            insertPropagateMap(backwardMap, output, t);
+                if (propagateOpTypes.find(type) == propagateOpTypes.end()) {
+                    continue;
+                }
+                std::vector<Tensor*> validInputs;
+                for (auto t : cmd.inputs) {
+                    if (t->getType().code == halide_type_float) {
+                        validInputs.emplace_back(t);
+                    }
+                }
+                std::vector<Tensor*> validOutputs;
+                for (auto t : cmd.outputs) {
+                    if (t->getType().code == halide_type_float) {
+                        validOutputs.emplace_back(t);
+                    }
+                }
+                if (validInputs.size() == 1) {
+                    for (auto t : validOutputs) {
+                        if (TensorUtils::getDescribe(t)->quantAttr.get() == nullptr) {
+                            insertPropagateMap(forwardMap, validInputs[0], t);
+                        }
+                    }
+                }
+                if (validOutputs.size() == 1) {
+                    for (auto t : validInputs) {
+                        if (TensorUtils::getDescribe(t)->quantAttr.get() == nullptr) {
+                            insertPropagateMap(backwardMap, validOutputs[0], t);
                         }
                     }
                 }
@@ -324,7 +346,7 @@ ErrorCode Pipeline::encode(bool supportDebug, bool permitCodegen) {
             return change;
         };
         for (int i = 0; i < 3 && (propagateScale(forwardMap, forwardStart) || propagateScale(backwardMap, backwardStart)); i++);
-        
+
         // Insert cast
         std::map<const Tensor*, Tensor*> cachedCastTensor;
         for (auto& info : mInfo.second) {
@@ -337,11 +359,9 @@ ErrorCode Pipeline::encode(bool supportDebug, bool permitCodegen) {
                 auto opType = cmd.op->type();
                 // Check if need use quant op
                 bool useQuant = false;
-                if (outputs.size() == 1) {
-                    // Quant: output and all input has quantAttr and op support
-                    if (TensorUtils::getDescribe(outputs[0])->quantAttr != nullptr) {
-                        useQuant = creator->onSetQuantInfo(cmd.op, inputs, outputs);
-                    }
+                // Quant: output and all input has quantAttr and op support
+                if (TensorUtils::getDescribe(outputs[0])->quantAttr != nullptr) {
+                    useQuant = creator->onSetQuantInfo(cmd.op, inputs, outputs);
                 }
                 auto makeCommand = [&cachedCastTensor, &info](CommandBuffer& cmdBuffer, Tensor* input, bool useQuant) {
                     if (cachedCastTensor.find(input) != cachedCastTensor.end()) {
@@ -519,6 +539,8 @@ static ErrorCode _createExecutions(Schedule::PipelineInfo& mInfo, const std::str
     FileLoader loader(externalFile.c_str());
     auto& mBackend = mInfo.first.cache.first;
     auto& mBackupBackend = mInfo.first.cache.second;
+    // KV Cache sharing: registry of Attention executions by layer_index for clone-based reuse
+    std::map<int, std::shared_ptr<Execution>> kvAttentionRegistry;
     for (auto& info : mInfo.second) {
         if (!info.computeCache.needComputeShape) {
             continue;
@@ -543,7 +565,24 @@ static ErrorCode _createExecutions(Schedule::PipelineInfo& mInfo, const std::str
             }
             std::shared_ptr<BufferStorage> tmpStorage;
             if (nullptr == iter.execution) {
-                iter.execution.reset(OpCommonUtils::createExecutionWithExternal(mBackend.get(), iter.inputs, iter.outputs, iter.op, &loader, tmpStorage));
+                // KV Cache sharing: clone from source Attention's execution instead of creating new
+                if (iter.op->type() == OpType_Attention && iter.op->main_type() == OpParameter_AttentionParam) {
+                    auto param = iter.op->main_as_AttentionParam();
+                    int kvSharedIdx = param ? param->kv_shared_layer_index() : -1;
+                    if (kvSharedIdx >= 0) {
+                        auto srcIt = kvAttentionRegistry.find(kvSharedIdx);
+                        if (srcIt != kvAttentionRegistry.end()) {
+                            Execution* cloned = nullptr;
+                            if (srcIt->second->onClone(srcIt->second->backend(), iter.op, &cloned) && cloned) {
+                                iter.execution.reset(cloned);
+                            }
+                        }
+                    }
+                }
+                if (nullptr == iter.execution) {
+                    iter.execution.reset(OpCommonUtils::createExecutionWithExternal(
+                        mBackend.get(), iter.inputs, iter.outputs, iter.op, &loader, tmpStorage));
+                }
             }
             if (nullptr == iter.execution) {
                 // Try Backup
@@ -560,9 +599,17 @@ static ErrorCode _createExecutions(Schedule::PipelineInfo& mInfo, const std::str
             }
             // invalid means memory alloc failed
             if (!iter.execution->valid()) {
-                iter.execution = nullptr;
+                MNN_ERROR("Pipeline: execution invalid (OOM) for op type: %d\n", iter.op->type());
                 iter.execution = nullptr;
                 return OUT_OF_MEMORY;
+            }
+            // Register Attention execution for KV Cache sharing
+            if (iter.op->type() == OpType_Attention && iter.op->main_type() == OpParameter_AttentionParam) {
+                auto param = iter.op->main_as_AttentionParam();
+                int layerIndex = param ? param->layer_index() : -1;
+                if (layerIndex >= 0) {
+                    kvAttentionRegistry[layerIndex] = iter.execution;
+                }
             }
             if ((!cached) && iter.buffer == nullptr && (iter.op->type() != OpType_Raster) && (iter.op->type() != OpType_BinaryOp)) {
                 info.executionCache.insert(std::make_pair(iter.op, iter.execution));
@@ -958,18 +1005,20 @@ ErrorCode Pipeline::_allocForTensor(int index, bool allocInput) {
 #endif
             // Alloc for Tensors
             auto curBackend = iter.execution->backend();
-            if (allocInput) {
+            if (allocInput && iter.execution->needAllocIO()) {
                 for (auto t : iter.workInputs) {
                     auto allocRes = _allocTensor(t, curBackend, mOutputStatic, index);
                     if (!allocRes) {
+                        MNN_ERROR("Pipeline: _allocTensor failed for input of op type: %d\n", iter.op->type());
                         return OUT_OF_MEMORY;
                     }
                 }
             }
-            {
+            if (iter.execution->needAllocIO()) {
                 for (auto t : iter.workOutputs) {
                     auto res = _allocTensor(t, curBackend, mOutputStatic, index);
                     if (!res) {
+                        MNN_ERROR("Pipeline: _allocTensor failed for output of op type: %d\n", iter.op->type());
                         return OUT_OF_MEMORY;
                     }
                 }
@@ -1140,7 +1189,7 @@ ErrorCode Pipeline::execute() {
                     deviceOfOutput = deviceOfOutput + " " + std::to_string(cmd.workOutputs[v]->deviceId()) + " ";
                 }
                 deviceOfOutput += "]";
-                MNN_PRINT("Group: %d, %s - %d, type=%s, inputs: %s, devices: %s - %s\n", info.group, info.op->name()->c_str(), cmdIndex, EnumNameOpType(cmd.op->type()), groupOfInput.c_str(), deviceOfInput.c_str(), deviceOfOutput.c_str());
+                MNN_PRINT("Group: %d, %s - %d, type=%s, inputs: %s, devices: %s - %s\n", cmd.group, info.op->name()->c_str(), cmdIndex, EnumNameOpType(cmd.op->type()), groupOfInput.c_str(), deviceOfInput.c_str(), deviceOfOutput.c_str());
             }
 #endif
             auto code = cmd.execution->onExecute(cmd.workInputs, cmd.workOutputs);

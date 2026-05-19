@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
+import com.alibaba.mnnllm.api.openai.network.compat.EndpointUrlBuilder
 import com.alibaba.mnnllm.api.openai.service.ApiServerConfig
 import timber.log.Timber
 
@@ -62,17 +63,19 @@ class ApiNotificationManager(private val context: Context) {
         port: Int = 8080
     ): Notification {
         val title = contentTitle ?: context.getString(com.alibaba.mnnllm.android.R.string.api_service_running)
-        val ipAddress = ApiServerConfig.getIpAddress(context)
-        val url = "http://$ipAddress:$port"
+        var ipAddress = ApiServerConfig.getIpAddress(context)
+        // If listening on all interfaces (0.0.0.0), use localhost for the notification link
+        val displayIp = if (ipAddress == "0.0.0.0") "127.0.0.1" else ipAddress
+        val url = EndpointUrlBuilder.buildBaseUrl(displayIp, port, ApiServerConfig.useHttpsUrl(context))
         val text = if (contentText.isNullOrBlank()) {
             context.getString(com.alibaba.mnnllm.android.R.string.api_service_running_on, ipAddress, port)
         } else {
             contentText
         }
         
-        Timber.tag("ApiNotificationManager").i("Building notification - Config IP: $ipAddress, Port: $port, Text: $text")
+        Timber.tag("ApiNotificationManager").i("Building notification - Config IP: $ipAddress, Display IP: $displayIp, Port: $port, Text: $text")
         
-        // 创建停止服务的 PendingIntent
+        //createstopservice PendingIntent
         val stopIntent = Intent(ApiServiceActionReceiver.ACTION_STOP_SERVICE).apply {
             `package` = context.packageName
         }
@@ -86,7 +89,7 @@ class ApiNotificationManager(private val context: Context) {
         )
         Timber.tag("ApiNotificationManager").i("Stop PendingIntent created: $stopPendingIntent")
         
-        // 创建复制 URL 的 PendingIntent
+        //createcopy URL PendingIntent
         val copyIntent = Intent(ApiServiceActionReceiver.ACTION_COPY_URL).apply {
             `package` = context.packageName
             putExtra(ApiServiceActionReceiver.EXTRA_URL, url)
@@ -101,7 +104,7 @@ class ApiNotificationManager(private val context: Context) {
         )
         Timber.tag("ApiNotificationManager").i("Copy PendingIntent created: $copyPendingIntent")
         
-        // 创建打开测试页面的 PendingIntent
+        //createopentestpage PendingIntent
         val testIntent = Intent(ApiServiceActionReceiver.ACTION_TEST_PAGE).apply {
             `package` = context.packageName
             putExtra(ApiServiceActionReceiver.EXTRA_URL, url)
@@ -116,7 +119,7 @@ class ApiNotificationManager(private val context: Context) {
         )
         Timber.tag("ApiNotificationManager").i("Test PendingIntent created: $testPendingIntent")
         
-        // 创建点击通知时打开主Activity的PendingIntent
+        //createclicknotificationwhenopen mainActivityPendingIntent
         val mainActivityIntent = Intent(context, com.alibaba.mnnllm.android.main.MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
