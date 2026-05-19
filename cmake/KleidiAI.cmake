@@ -73,7 +73,7 @@ function (download_kleidiai_and_collect_sources)
             CACHE PATH "Path to KleidiAI source (downloaded or provided)" FORCE)
     endif()
 
-    set(MNN_KLEIDIAI_DIR "${CMAKE_SOURCE_DIR}/source/backend/cpu/kleidiai")
+    set(MNN_KLEIDIAI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/source/backend/cpu/kleidiai")
     list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/mnn_kleidiai.cpp)
     list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/mnn_kleidiai_util.cpp)
     list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/KleidiAIConvolution.cpp)
